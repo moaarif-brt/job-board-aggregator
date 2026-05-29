@@ -1,9 +1,9 @@
 {
-  "last_updated": "2026-05-28T02:14:33.482888Z",
-  "total_companies": 47881,
-  "active_companies": 22090,
-  "total_jobs": 1419952,
-  "recruiter_jobs": 9542,
-  "source_type": "manual",
-  "platforms": "greenhouse_api, ashby_api, bamboohr_api, lever_api, workday_api, icims_sitemap"
+  "last_updated": "2026-05-29T22:21:54.124336Z",
+  "total_companies": 54679,
+  "active_companies": 26134,
+  "total_jobs": 1659960,
+  "recruiter_jobs": 18698,
+  "source_type": "automated",
+  "platforms": "greenhouse_api, ashby_posting_api, bamboohr_api, lever_api, workday_api, icims_sitemap, workable_api, recruitee_api, personio_xml, smartrecruiters_api"
 }
