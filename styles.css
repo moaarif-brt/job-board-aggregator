@@ -512,6 +512,11 @@ body.map-mode .filter-panel {
     color: #c2410c;
 }
 
+.badge.ats-smartrecruiters {
+    background: #dcfce7;
+    color: #15803d;
+}
+
 .badge.ats-unknown {
     background: #f1f5f9;
     color: #64748b;

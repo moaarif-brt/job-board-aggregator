@@ -45,6 +45,7 @@ jobs:
           WORKABLE=$(jq '[.[] | select(.ats == "Workable")] | length' scripts/output/all_jobs.json)
           RECRUITEE=$(jq '[.[] | select(.ats == "Recruitee")] | length' scripts/output/all_jobs.json)
           PERSONIO=$(jq '[.[] | select(.ats == "Personio")] | length' scripts/output/all_jobs.json)
+          SMARTRECRUITERS=$(jq '[.[] | select(.ats == "SmartRecruiters")] | length' scripts/output/all_jobs.json)
 
           # Tier breakdown
           INTERN=$(jq '[.[] | select(.skill_level == "intern")] | length' scripts/output/all_jobs.json)
@@ -70,6 +71,7 @@ jobs:
             --argjson workable "$WORKABLE" \
             --argjson recruitee "$RECRUITEE" \
             --argjson personio "$PERSONIO" \
+            --argjson smartrecruiters "$SMARTRECRUITERS" \
             --argjson intern "$INTERN" \
             --argjson entry "$ENTRY" \
             --argjson mid "$MID" \
@@ -88,7 +90,8 @@ jobs:
                 icims: $icims,
                 workable: $workable,
                 recruitee: $recruitee,
-                personio: $personio
+                personio: $personio,
+                smartrecruiters: $smartrecruiters
               },
               by_tier: {
                 intern: $intern,
@@ -102,7 +105,7 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add data/chunks/jobs_chunk_*.json.gz data/chunks/jobs_manifest.json data/metadata.json data/trends/ data/salary/ data/workable_companies.json data/recruitee_companies.json data/personio_companies.json
+          git add data/chunks/jobs_chunk_*.json.gz data/chunks/jobs_manifest.json data/metadata.json data/trends/ data/salary/ data/workable_companies.json data/recruitee_companies.json data/personio_companies.json data/smartrecruiters_companies.json
           git diff --staged --quiet || git commit -m "Automated scrape + merge - $(date +'%Y-%m-%d %H:%M UTC')"
           git push
 

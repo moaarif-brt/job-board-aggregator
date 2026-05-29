@@ -69,6 +69,7 @@ scripts/test_scraper.py
 !data/personio_companies.json
 !data/recruitee_companies.json
 !data/workable_companies.json
+!data/smartrecruiters_companies.json
 !data/salary/salary_lookup.json
 !data/salary/shards/salary_*.json
 

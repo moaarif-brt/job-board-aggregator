@@ -10,12 +10,18 @@ CHUNK_SIZE = 25_000
 
 def get_dedup_key(job):
     url = job.get("url", "")
-    if job.get("ats") == "Workday":
+    ats = job.get("ats")
+    if ats == "Workday":
         # Extract numeric job ID from URL, fall back to url if not found
         match = re.search(r'/jobs/(\d+)', url)
         if match:
             company = job.get("company", "")
             return f"workday:{company}:{match.group(1)}"
+    if ats == "SmartRecruiters":
+        match = re.search(r"/(\d{9,})(?:/|$)", url)
+        if match:
+            company = job.get("company", "")
+            return f"smartrecruiters:{company}:{match.group(1)}"
     return url
 
 

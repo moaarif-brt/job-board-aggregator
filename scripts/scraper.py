@@ -27,8 +27,14 @@ ICIMS_FILE = os.path.join(ROOT_DIR, "data", "icims_companies.json")
 WORKABLE_FILE = os.path.join(ROOT_DIR, "data", "workable_companies.json")
 RECRUITEE_FILE = os.path.join(ROOT_DIR, "data", "recruitee_companies.json")
 PERSONIO_FILE = os.path.join(ROOT_DIR, "data", "personio_companies.json")
+SMARTRECRUITERS_FILE = os.path.join(ROOT_DIR, "data", "smartrecruiters_companies.json")
 
 LOCATIONS_FILE = os.path.join(ROOT_DIR, "data", "locations.json")
+
+PLATFORM_SOURCE_SUMMARY = (
+    "greenhouse_api, ashby_posting_api, bamboohr_api, lever_api, workday_api, "
+    "icims_sitemap, workable_api, recruitee_api, personio_xml, smartrecruiters_api"
+)
 
 
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
@@ -187,6 +193,87 @@ def fetch_company_jobs_greenhouse(slug):
 
 
 def fetch_company_jobs_ashby(slug):
+    public_jobs = fetch_company_jobs_ashby_public(slug)
+    if public_jobs[1] or public_jobs[2] not in (404, 410, None):
+        return public_jobs
+
+    return fetch_company_jobs_ashby_graphql(slug)
+
+
+def fetch_company_jobs_ashby_public(slug):
+    try:
+        url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}"
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": random.choice(USER_AGENTS),
+        }
+
+        time.sleep(random.uniform(0.5, 2.0))
+
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            response = requests.get(
+                url,
+                params={"includeCompensation": "true"},
+                headers=headers,
+                timeout=30,
+            )
+
+            if response.status_code == 200:
+                break
+            if response.status_code in (429, 502, 503, 504) and attempt < max_retries:
+                backoff = (2**attempt) + random.uniform(0.5, 1.5)
+                print(
+                    f"  Ashby public {slug}: {response.status_code}, retrying in {backoff:.1f}s"
+                )
+                time.sleep(backoff)
+                headers["User-Agent"] = random.choice(USER_AGENTS)
+                continue
+            return slug, [], response.status_code
+
+        if response.status_code != 200:
+            return slug, [], response.status_code
+
+        data = response.json()
+        jobs = data.get("jobs") or []
+
+        if jobs:
+            normalized = []
+            for job in jobs:
+                location = build_ashby_location(job)
+                remote, coords = enrich_location(location)
+                remote = bool(job.get("isRemote")) or remote
+                salary = parse_ashby_compensation(job.get("compensation"))
+
+                normalized_job = {
+                    "company": slug,
+                    "company_slug": slug,
+                    "title": job.get("title", ""),
+                    "location": location[:50],
+                    "remote": remote,
+                    "coords": coords,
+                    "url": job.get("jobUrl") or job.get("applyUrl"),
+                    "is_recruiter": is_recruiter_company(slug),
+                    "ats": "Ashby",
+                    "skill_level": job_tier_classification(job.get("title", "")),
+                    "workplaceType": job.get("workplaceType"),
+                    "published_at": job.get("publishedAt"),
+                    **get_job_metadata(),
+                }
+
+                if salary:
+                    normalized_job["salary"] = salary
+
+                normalized.append(normalized_job)
+            return slug, normalized, response.status_code
+
+        return slug, [], response.status_code
+    except Exception as e:
+        print(f"Error fetching Ashby public API for {slug}: {e}")
+    return slug, [], None
+
+
+def fetch_company_jobs_ashby_graphql(slug):
     try:
         url = "https://jobs.ashbyhq.com/api/non-user-graphql?op=ApiJobBoardWithTeams"
         payload = {
@@ -251,6 +338,81 @@ def fetch_company_jobs_ashby(slug):
     except Exception as e:
         print(f"Error fetching Ashby for {slug}: {e}")
     return slug, [], None
+
+
+def build_ashby_location(job):
+    locations = []
+    primary_location = job.get("location")
+    if primary_location:
+        locations.append(primary_location)
+
+    for loc in job.get("secondaryLocations") or []:
+        if isinstance(loc, str):
+            locations.append(loc)
+        elif isinstance(loc, dict):
+            location_name = loc.get("location") or loc.get("name")
+            if location_name:
+                locations.append(location_name)
+
+    if locations:
+        return "; ".join(dict.fromkeys(locations))
+
+    postal = ((job.get("address") or {}).get("postalAddress") or {})
+    city = postal.get("addressLocality", "")
+    region = postal.get("addressRegion", "")
+    country = postal.get("addressCountry", "")
+    return ", ".join(filter(None, [city, region, country])) or "Not specified"
+
+
+def parse_ashby_compensation(compensation):
+    if not isinstance(compensation, dict):
+        return None
+
+    summary_parts = [
+        compensation.get("scrapeableCompensationSalarySummary"),
+        compensation.get("compensationTierSummary"),
+    ]
+    for component in compensation.get("summaryComponents") or []:
+        if isinstance(component, dict):
+            summary_parts.append(component.get("text") or component.get("value"))
+        elif isinstance(component, str):
+            summary_parts.append(component)
+
+    salary_text = " ".join(str(part) for part in summary_parts if part)
+    return parse_salary_summary(salary_text)
+
+
+def parse_salary_summary(salary_text):
+    if not salary_text or "$" not in salary_text:
+        return None
+
+    cleaned = salary_text.replace(",", "")
+    matches = re.findall(r"\$\s*(\d+(?:\.\d+)?)\s*([kKmM]?)", cleaned)
+    if not matches:
+        return None
+
+    values = []
+    for value, suffix in matches[:2]:
+        amount = float(value)
+        if suffix.lower() == "k":
+            amount *= 1_000
+        elif suffix.lower() == "m":
+            amount *= 1_000_000
+        elif amount < 1_000:
+            amount *= 1_000
+        values.append(int(round(amount)))
+
+    if not values:
+        return None
+
+    if len(values) == 1:
+        p25 = median = p75 = values[0]
+    else:
+        p25 = min(values)
+        p75 = max(values)
+        median = int(round((p25 + p75) / 2))
+
+    return {"p25": p25, "median": median, "p75": p75, "n": 1, "source": "ashby"}
 
 
 def fetch_company_jobs_bamboohr(slug):
@@ -720,6 +882,106 @@ def fetch_company_jobs_personio(slug):
     return slug, [], None
 
 
+def fetch_company_jobs_smartrecruiters(slug):
+    """
+    https://api.smartrecruiters.com/v1/companies/{slug}/postings
+    Returns a paginated JSON dictionary with a "content" array.
+    """
+    base_url = f"https://api.smartrecruiters.com/v1/companies/{slug}/postings"
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": random.choice(USER_AGENTS),
+    }
+
+    time.sleep(random.uniform(0.5, 2.0))
+
+    normalized = []
+    offset = 0
+    limit = 100
+    retries = 0
+    max_retries = 2
+
+    try:
+        while True:
+            response = requests.get(
+                base_url,
+                params={"offset": offset, "limit": limit},
+                headers=headers,
+                timeout=30,
+            )
+
+            if response.status_code != 200:
+                if response.status_code in (429, 502, 503, 504) and retries < max_retries:
+                    retries += 1
+                    time.sleep((2**retries) + random.uniform(0.5, 1.5))
+                    continue
+                return slug, normalized, response.status_code
+
+            retries = 0
+            data = response.json()
+            jobs = data.get("content", [])
+            total = data.get("totalFound", 0)
+
+            if not jobs:
+                break
+
+            for job in jobs:
+                location_data = job.get("location") or {}
+                full_location = location_data.get("fullLocation")
+                if full_location:
+                    location = full_location
+                else:
+                    city = location_data.get("city", "")
+                    region = location_data.get("region", "")
+                    country = location_data.get("country", "")
+                    location = ", ".join(filter(None, [city, region, country])) or "Not specified"
+
+                remote, coords = enrich_location(location)
+                remote = bool(location_data.get("remote")) or remote
+
+                latitude = location_data.get("latitude")
+                longitude = location_data.get("longitude")
+                if latitude and longitude:
+                    try:
+                        coords = [float(latitude), float(longitude)]
+                    except (TypeError, ValueError):
+                        pass
+
+                company_data = job.get("company") or {}
+                company = company_data.get("identifier") or slug
+                title = job.get("name")
+                job_url = job.get("postingUrl") or job.get("applyUrl")
+                if not job_url and job.get("id"):
+                    job_url = f"https://jobs.smartrecruiters.com/{company}/{job.get('id')}"
+
+                normalized.append(
+                    {
+                        "company": company,
+                        "company_slug": slug,
+                        "title": title,
+                        "location": location[:50],
+                        "remote": remote,
+                        "coords": coords,
+                        "url": job_url,
+                        "is_recruiter": is_recruiter_company(company),
+                        "ats": "SmartRecruiters",
+                        "skill_level": job_tier_classification(title or ""),
+                        **get_job_metadata(),
+                    }
+                )
+
+            offset += limit
+            if offset >= total:
+                break
+
+            time.sleep(random.uniform(0.2, 0.7))
+
+        return slug, normalized, 200
+    except Exception as e:
+        print(f"Error fetching SmartRecruiters for {slug}: {e}")
+    return slug, [], None
+
+
 def fetch_all_jobs(companies, fetcher, platform="ATS"):
     """Fetch jobs from all companies in parallel."""
     print("=" * 80)
@@ -750,6 +1012,7 @@ def fetch_all_jobs(companies, fetcher, platform="ATS"):
         "workable": 30,
         "recruitee": 30,
         "personio": 30,
+        "smartrecruiters": 30,
     }
 
     max_workers = MAX_WORKERS.get(platform_lower, 30)
@@ -764,7 +1027,7 @@ def fetch_all_jobs(companies, fetcher, platform="ATS"):
 
             if jobs:
                 all_jobs.extend(jobs)
-                active_companies[slug] = len(jobs)
+                active_companies[f"{platform_lower}:{slug}"] = len(jobs)
                 print(f"  [{i}/{len(live_companies)}] {slug}: {len(jobs)} jobs")
             else:
                 failed += 1
@@ -970,7 +1233,7 @@ def save_results(all_companies, active_companies, all_jobs):
         primary_key = f"{company}|{title}|{level}"
         fallback_key = f"{title}|{level}"
         
-        job["salary"] = (
+        job["salary"] = job.get("salary") or (
             salary_lookup.get(primary_key) or
             salary_fallback.get(fallback_key)
         )
@@ -991,6 +1254,7 @@ def save_results(all_companies, active_companies, all_jobs):
         "skill_level",
         "is_recruiter",
         "workplaceType",
+        "published_at",
         "scraped_at",
         "remote",
         "coords",
@@ -1051,7 +1315,7 @@ def save_results(all_companies, active_companies, all_jobs):
         "total_jobs": len(all_jobs),
         "recruiter_jobs": recruiter_jobs,
         "source_type": SOURCE_TYPE,
-        "platforms": "greenhouse_api, ashby_api, bamboohr_api, lever_api, workday_api, icims_sitemap, workable_api, recruitee_api, personio_xml",
+        "platforms": PLATFORM_SOURCE_SUMMARY,
     }
 
     metadata_file = os.path.join(OUTPUT_DIR, "metadata.json")
@@ -1078,6 +1342,7 @@ def main():
     workable_companies = load_companies(WORKABLE_FILE)
     recruitee_companies = load_companies(RECRUITEE_FILE)
     personio_companies = load_companies(PERSONIO_FILE)
+    smartrecruiters_companies = load_companies(SMARTRECRUITERS_FILE)
 
     if (
         not greenhouse_companies
@@ -1089,6 +1354,7 @@ def main():
         and not workable_companies
         and not recruitee_companies
         and not personio_companies
+        and not smartrecruiters_companies
     ):
         print("Exiting - no companies loaded!")
         return
@@ -1104,6 +1370,7 @@ def main():
         (workable_companies, fetch_company_jobs_workable, "WORKABLE"),
         (recruitee_companies, fetch_company_jobs_recruitee, "RECRUITEE"),
         (personio_companies, fetch_company_jobs_personio, "PERSONIO"),
+        (smartrecruiters_companies, fetch_company_jobs_smartrecruiters, "SMARTRECRUITERS"),
     ]
 
     # Run all platforms concurrently
@@ -1136,6 +1403,7 @@ def main():
         | workable_companies
         | recruitee_companies
         | personio_companies
+        | smartrecruiters_companies
     )
 
     save_results(all_companies, all_active_companies, all_jobs)
