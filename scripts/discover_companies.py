@@ -24,6 +24,7 @@ PLATFORM_FILES = {
     "personio": os.path.join(DATA_DIR, "personio_companies.json"),
     "smartrecruiters": os.path.join(DATA_DIR, "smartrecruiters_companies.json"),
     "jazzhr": os.path.join(DATA_DIR, "jazzhr_companies.json"),
+    "pinpoint": os.path.join(DATA_DIR, "pinpoint_companies.json"),
     "workday": os.path.join(DATA_DIR, "workday_companies.json"),
 }
 
@@ -41,6 +42,7 @@ COMMON_CRAWL_QUERIES = {
     "bamboohr": ["*.bamboohr.com/careers*"],
     "icims": ["careers-*.icims.com/jobs/*", "*.icims.com/jobs/*"],
     "jazzhr": ["app.jazz.co/widgets/basic/create/*", "app.jazz.co/feeds/export/jobs/*"],
+    "pinpoint": ["*.pinpointhq.com/postings.json", "*.pinpointhq.com/*"],
     "workday": ["*.myworkdayjobs.com/*"],
 }
 
@@ -97,6 +99,11 @@ PATTERNS = {
     "jazzhr": [
         r'app\.jazz\.co/widgets/basic/create/([^/\'"#?&\s]+)',
         r'app\.jazz\.co/feeds/export/jobs/([^/\'"#?&\s]+)'
+    ],
+    "pinpoint": [
+        r'([a-z0-9-]+)\.pinpointhq\.com/(?:[a-z]{2}(?:-[A-Z]{2})?/)?postings\.json',
+        r'([a-z0-9-]+)\.pinpointhq\.com/(?:[a-z]{2}(?:-[A-Z]{2})?/)?postings(?:/|["\'#?&\s])',
+        r'data-pinpoint-subdomain=["\']([a-z0-9-]+)["\']'
     ],
     "workday": [
         r'([a-z0-9-]+)\.wd(\d+)\.myworkdayjobs\.com/(?:en-US/)?([a-zA-Z0-9_-]+)'

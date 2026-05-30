@@ -72,6 +72,7 @@ scripts/test_scraper.py
 !data/workable_companies.json
 !data/smartrecruiters_companies.json
 !data/jazzhr_companies.json
+!data/pinpoint_companies.json
 !data/config.json
 !data/companies/
 !data/companies/**

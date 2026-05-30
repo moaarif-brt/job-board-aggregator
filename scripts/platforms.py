@@ -61,6 +61,11 @@ PLATFORMS = {
         "ats": "JazzHR",
         "company_file": DATA_DIR / "jazzhr_companies.json",
     },
+    "pinpoint": {
+        "label": "PINPOINT",
+        "ats": "Pinpoint",
+        "company_file": DATA_DIR / "pinpoint_companies.json",
+    },
 }
 
 DEFAULT_PRIORITIES = {"daily", "every_3_days"}
