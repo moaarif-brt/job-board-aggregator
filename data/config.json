@@ -1,4 +1,4 @@
 {
-  "jobsBaseUrl": "",
+  "jobsBaseUrl": "https://pub-77d7e643372f465ea1ee9c2c591c10ad.r2.dev/jobs/latest",
   "localJobsBaseUrl": "./data/chunks"
 }
