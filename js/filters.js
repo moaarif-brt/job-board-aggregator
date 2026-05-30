@@ -2,8 +2,34 @@
 // FILTERING
 // ============================================================
 
-import { escapeRegex } from './ui_utils.js';
 import { loadApplicationStatus } from './storage.js';
+
+function normalizeText(value) {
+    return String(value || '')
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .trim();
+}
+
+function splitTerms(value) {
+    return normalizeText(value)
+        .split(/[\s,]+/)
+        .map(term => term.trim())
+        .filter(Boolean);
+}
+
+function matchesAllTerms(text, terms) {
+    if (!terms.length) return true;
+    const normalized = normalizeText(text);
+    return terms.every(term => normalized.includes(term));
+}
+
+function matchesAnyTerm(text, terms) {
+    if (!terms.length) return true;
+    const normalized = normalizeText(text);
+    return terms.some(term => normalized.includes(term));
+}
 
 /**
  * Read current filter values from the DOM.
@@ -14,15 +40,15 @@ export function readFilterInputs() {
         hideRecruiters: document.getElementById('filter-hide-recruiters').checked,
         remoteOnly: document.getElementById('filter-remote-only').checked,
         hideApplied: document.getElementById('filter-hide-applied').checked,
-        title: document.getElementById('filter-title').value.toLowerCase().trim(),
-        company: document.getElementById('filter-company').value.toLowerCase().trim(),
-        location: document.getElementById('filter-location').value.toLowerCase().trim(),
+        title: normalizeText(document.getElementById('filter-title').value),
+        company: normalizeText(document.getElementById('filter-company').value),
+        location: normalizeText(document.getElementById('filter-location').value),
         salary: document.getElementById('filter-salary-min').value,
         status: document.getElementById('filter-status').value,
         ats: document.getElementById('filter-ats').value,
         skill_level: document.getElementById('filter-skill-level').value,
-        exclude: document.getElementById('filter-exclude').value.toLowerCase().trim(),
-        include: document.getElementById('filter-include').value.toLowerCase().trim(),
+        exclude: normalizeText(document.getElementById('filter-exclude').value),
+        include: normalizeText(document.getElementById('filter-include').value),
     };
 }
 
@@ -35,9 +61,11 @@ export function filterJobs(allJobs) {
     const f = readFilterInputs();
     const apps = loadApplicationStatus();
 
-    const titleRegex = f.title ? new RegExp(`\\b${escapeRegex(f.title)}\\b`, 'i') : null;
-    const companyRegex = f.company ? new RegExp(`\\b${escapeRegex(f.company)}\\b`, 'i') : null;
-    const locationRegex = f.location ? new RegExp(`\\b${escapeRegex(f.location)}\\b`, 'i') : null;
+    const titleTerms = splitTerms(f.title);
+    const companyTerms = splitTerms(f.company);
+    const locationTerms = splitTerms(f.location);
+    const excludeTerms = splitTerms(f.exclude);
+    const includeTerms = splitTerms(f.include);
 
     const filterState = {
         title: f.title,
@@ -64,13 +92,13 @@ export function filterJobs(allJobs) {
         if (f.status && jobStatus !== f.status) return false;
 
         // Text fields
-        const title = (job.title || '').toLowerCase();
-        const company = ((job.company || job.company_slug) || '').toLowerCase();
+        const title = normalizeText(job.title);
+        const company = normalizeText((job.company || job.company_slug) || '');
         let location = '';
         if (job.location) {
             location = typeof job.location === 'object'
-                ? (job.location.name || '').toLowerCase()
-                : (job.location || '').toLowerCase();
+                ? normalizeText(job.location.name)
+                : normalizeText(job.location);
         }
 
         // in your filter state collection
@@ -102,21 +130,15 @@ export function filterJobs(allJobs) {
         }
 
         // Exclude title keywords
-        if (f.exclude) {
-            const excludeTerms = f.exclude.split(',').map(t => t.trim()).filter(Boolean);
-            if (excludeTerms.some(term => title.includes(term))) return false;
-        }
+        if (excludeTerms.length && matchesAnyTerm(title, excludeTerms)) return false;
 
         // Include Title keywords
-        if (f.include) {
-            const includeTerms = f.include.split(',').map(t => t.trim()).filter(Boolean);
-            if (!includeTerms.some(term => title.includes(term))) return false;
-        }
+        if (includeTerms.length && !matchesAnyTerm(title, includeTerms)) return false;
 
         return (
-            (!titleRegex || titleRegex.test(title)) &&
-            (!companyRegex || companyRegex.test(company)) &&
-            (!locationRegex || locationRegex.test(location))
+            matchesAllTerms(title, titleTerms) &&
+            matchesAllTerms(company, companyTerms) &&
+            matchesAllTerms(location, locationTerms)
         );
     });
 

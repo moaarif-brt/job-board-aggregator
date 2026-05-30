@@ -6,6 +6,14 @@ import { escape, showToast, updateFABVisibility } from './ui_utils.js';
 import { saveApplicationStatus, deleteApplicationStatus } from './storage.js';
 
 const ACTION_CHECKBOXES = ['.save-checkbox', '.apply-checkbox', '.ignored-checkbox'];
+const TEXT_FILTER_INPUTS = [
+    'filter-title',
+    'filter-company',
+    'filter-location',
+    'filter-salary-min',
+    'filter-exclude',
+    'filter-include',
+];
 
 /**
  * Wire up all DOM event listeners.
@@ -30,13 +38,21 @@ export function setupEventListeners(app) {
     document.getElementById('apply-filters').addEventListener('click', () => app.applyFilters());
     document.getElementById('clear-filters').addEventListener('click', () => app.clearFilters());
 
-    // Enter key on text filter inputs
-    ['filter-title', 'filter-company', 'filter-location', 'filter-salary-min',
-        'filter-exclude', 'filter-include'].forEach(id => {
-            document.getElementById(id).addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') app.applyFilters();
-            });
+    // Text filters apply while typing, with a small delay to keep large datasets smooth.
+    let filterInputTimer;
+    TEXT_FILTER_INPUTS.forEach(id => {
+        const input = document.getElementById(id);
+        input.addEventListener('input', () => {
+            clearTimeout(filterInputTimer);
+            filterInputTimer = setTimeout(() => app.applyFilters(), 250);
         });
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                clearTimeout(filterInputTimer);
+                app.applyFilters();
+            }
+        });
+    });
 
     // ── Sorting — table header clicks ────────────────────────
     document.querySelectorAll('.job-table thead th').forEach((th, index) => {
@@ -79,6 +95,8 @@ export function setupEventListeners(app) {
     document.getElementById('filter-status').addEventListener('change', () => app.applyFilters());
     document.getElementById('filter-ats').addEventListener('change', () => app.applyFilters());
     document.getElementById('filter-skill-level').addEventListener('change', () => app.applyFilters());
+    document.getElementById('filter-hide-recruiters').addEventListener('change', () => app.applyFilters());
+    document.getElementById('filter-remote-only').addEventListener('change', () => app.applyFilters());
     document.getElementById('filter-hide-applied').addEventListener('change', () => app.applyFilters());
 
     // ── Batch processing ─────────────────────────────────────
