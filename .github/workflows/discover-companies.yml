@@ -1,0 +1,39 @@
+name: Discover Companies
+
+on:
+  schedule:
+    - cron: "17 4 * * 0"
+  workflow_dispatch:
+
+jobs:
+  discover-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.10"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Discover raw candidates
+        run: |
+          python scripts/discover_companies.py --source common-crawl --cc-indexes 3 --cc-limit 20000
+          python scripts/discover_companies.py --source yc
+
+      - name: Validate a bounded batch per platform
+        run: python scripts/validate_companies.py --limit 2500 --workers 12
+
+      - name: Refresh compatibility company files
+        run: python scripts/migrate_company_registry.py
+
+      - name: Commit registry updates
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add data/companies/ data/company_status/ data/*_companies.json
+          git diff --staged --quiet || git commit -m "Weekly company discovery - $(date +'%Y-%m-%d')"
+          git push

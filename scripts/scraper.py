@@ -9,8 +9,10 @@ import argparse
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from urllib.parse import unquote
 from geolocation import build_lookup, lookup_location
+from platforms import DEFAULT_PRIORITIES, PLATFORMS, SCRAPE_STATUSES, status_file
 
 # ============================================================
 # CONFIGURATION
@@ -106,6 +108,98 @@ def load_companies(filepath):
     except FileNotFoundError:
         print(f"File not found: {filepath}")
         return set()
+
+
+def load_json_file(path, default):
+    path = Path(path)
+    if not path.exists():
+        return default
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_json_file(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        if "company_status" in path.parts:
+            json.dump(data, f, separators=(",", ":"), sort_keys=isinstance(data, dict))
+        else:
+            json.dump(data, f, indent=2, sort_keys=isinstance(data, dict))
+        f.write("\n")
+
+
+def select_companies_for_run(platform, fallback_companies, priorities, shard_index, shard_count, company_limit):
+    """Select companies from registry status, falling back to legacy company lists."""
+    statuses = load_json_file(status_file(platform), {})
+    selected = []
+
+    if statuses:
+        allowed_priorities = set(priorities)
+        for slug, record in statuses.items():
+            status = record.get("status", "empty")
+            priority = record.get("priority", "weekly")
+            if status not in SCRAPE_STATUSES:
+                continue
+            if priority not in allowed_priorities:
+                continue
+            selected.append(slug)
+    else:
+        selected = list(fallback_companies)
+
+    selected = sorted(set(selected))
+    if shard_count > 1:
+        selected = [
+            slug for idx, slug in enumerate(selected)
+            if idx % shard_count == shard_index
+        ]
+    if company_limit:
+        selected = selected[:company_limit]
+    return set(selected)
+
+
+def update_company_status(platform, checked_companies, active_companies, failed_count):
+    """Update lightweight status records for companies checked in this shard."""
+    statuses = load_json_file(status_file(platform), {})
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    active_slugs = {
+        key.split(":", 1)[1] if ":" in key else key
+        for key in active_companies
+    }
+
+    for slug in checked_companies:
+        record = statuses.get(slug, {
+            "slug": slug,
+            "platform": platform,
+            "status": "empty",
+            "last_checked": None,
+            "last_active": None,
+            "last_job_count": 0,
+            "fail_count": 0,
+            "priority": "weekly",
+            "created_at": now,
+        })
+        job_count = active_companies.get(f"{platform}:{slug}", 0)
+        record["last_checked"] = now
+        record["updated_at"] = now
+        if slug in active_slugs:
+            record["status"] = "active"
+            record["last_active"] = now
+            record["last_job_count"] = job_count
+            record["fail_count"] = 0
+            record["priority"] = "daily"
+        else:
+            record["last_job_count"] = 0
+            if record.get("status") == "active":
+                record["status"] = "empty"
+                record["priority"] = "every_3_days"
+            else:
+                record["status"] = "empty"
+                record["priority"] = "weekly"
+        statuses[slug] = record
+
+    if checked_companies or failed_count:
+        save_json_file(status_file(platform), statuses)
 
 
 # ============================================================
@@ -1326,7 +1420,124 @@ def save_results(all_companies, active_companies, all_jobs):
     print()
 
 
-def main():
+def enrich_salaries(all_jobs):
+    salary_lookup_path = os.path.join(ROOT_DIR, "data", "salary", "salary_lookup.json")
+    salary_lookup = {}
+    salary_fallback = {}
+    if os.path.exists(salary_lookup_path):
+        with open(salary_lookup_path) as f:
+            data = json.load(f)
+            salary_lookup = data.get("primary", {})
+            salary_fallback = data.get("fallback", {})
+
+    for job in all_jobs:
+        company = (job.get("company") or "").lower().strip()
+        title = (job.get("title") or "").lower().strip()
+        level = job.get("skill_level", "mid")
+        primary_key = f"{company}|{title}|{level}"
+        fallback_key = f"{title}|{level}"
+        job["salary"] = job.get("salary") or (
+            salary_lookup.get(primary_key) or salary_fallback.get(fallback_key)
+        )
+
+    return all_jobs
+
+
+def save_shard_results(output_dir, platform, shard_index, shard_count, checked_companies, active_companies, all_jobs):
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    original_count = len(all_jobs)
+    all_jobs = clean_job_data(all_jobs)
+    all_jobs = enrich_salaries(all_jobs)
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    save_json_file(output_path / "jobs.json", all_jobs)
+    save_json_file(output_path / "active_companies.json", active_companies)
+    save_json_file(
+        output_path / "run_stats.json",
+        {
+            "platform": platform,
+            "shard_index": shard_index,
+            "shard_count": shard_count,
+            "checked_companies": len(checked_companies),
+            "active_companies": len(active_companies),
+            "jobs": len(all_jobs),
+            "invalid_jobs_removed": original_count - len(all_jobs),
+            "last_updated": timestamp,
+            "source_type": SOURCE_TYPE,
+        },
+    )
+    save_json_file(
+        output_path / "metadata.json",
+        {
+            "last_updated": timestamp,
+            "total_companies": len(checked_companies),
+            "active_companies": len(active_companies),
+            "total_jobs": len(all_jobs),
+            "source_type": SOURCE_TYPE,
+            "platforms": PLATFORM_SOURCE_SUMMARY,
+        },
+    )
+
+
+FETCHERS = {
+    "greenhouse": fetch_company_jobs_greenhouse,
+    "ashby": fetch_company_jobs_ashby,
+    "bamboohr": fetch_company_jobs_bamboohr,
+    "lever": fetch_company_jobs_lever,
+    "workday": fetch_company_jobs_workday,
+    "icims": fetch_company_jobs_icims,
+    "workable": fetch_company_jobs_workable,
+    "recruitee": fetch_company_jobs_recruitee,
+    "personio": fetch_company_jobs_personio,
+    "smartrecruiters": fetch_company_jobs_smartrecruiters,
+}
+
+
+def run_single_platform(args):
+    platform = args.platform
+    config = PLATFORMS[platform]
+    fallback_companies = load_companies(config["company_file"])
+    priorities = [
+        priority.strip()
+        for priority in (args.priority or ",".join(sorted(DEFAULT_PRIORITIES))).split(",")
+        if priority.strip()
+    ]
+    companies = select_companies_for_run(
+        platform,
+        fallback_companies,
+        priorities,
+        args.shard_index,
+        args.shard_count,
+        args.company_limit,
+    )
+
+    print(
+        f"Selected {len(companies):,} {platform} companies "
+        f"for shard {args.shard_index}/{args.shard_count} with priorities {','.join(priorities)}"
+    )
+    active, jobs = fetch_all_jobs(companies, FETCHERS[platform], config["label"])
+    update_company_status(platform, companies, active, 0)
+    save_shard_results(
+        args.output_dir,
+        platform,
+        args.shard_index,
+        args.shard_count,
+        companies,
+        active,
+        jobs,
+    )
+    print(
+        f"Shard complete: platform={platform}, active={len(active):,}, jobs={len(jobs):,}, output={args.output_dir}"
+    )
+
+
+def main(args=None):
+    if args and args.platform:
+        run_single_platform(args)
+        return
+
     print("\n" + "=" * 80)
     print("JOB BOARD AGGREGATOR")
     print("Scraping all jobs from ATS companies")
@@ -1427,10 +1638,18 @@ if __name__ == "__main__":
         default="automated",
         help="Source type: automated (GitHub Actions) or manual (local run)",
     )
+    parser.add_argument("--platform", choices=sorted(PLATFORMS))
+    parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument("--shard-count", type=int, default=1)
+    parser.add_argument("--company-limit", type=int)
+    parser.add_argument("--priority", default="daily,every_3_days")
+    parser.add_argument("--output-dir", default=OUTPUT_DIR)
 
     args = parser.parse_args()
+    if args.shard_index < 0 or args.shard_index >= args.shard_count:
+        parser.error("--shard-index must be >= 0 and < --shard-count")
     SOURCE_TYPE = args.source
 
     print(f"\nRunning in {SOURCE_TYPE.upper()} mode\n")
 
-    main()
+    main(args)

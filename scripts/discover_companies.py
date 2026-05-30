@@ -7,6 +7,7 @@ import os
 import ssl
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from platforms import raw_candidates_file
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(SCRIPT_DIR)
@@ -348,7 +349,19 @@ def discover_yc_companies(existing_companies, workers=20):
 
     return new_listings
 
-def save_discovered_companies(existing_companies, new_listings, dry_run=False):
+def load_json_file(path, default):
+    if not os.path.exists(path):
+        return default
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_json_file(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+def save_discovered_companies(existing_companies, new_listings, dry_run=False, promote=False):
     print("\n" + "=" * 80)
     print("SAVING NEW SLUGS")
     print("=" * 80)
@@ -367,8 +380,15 @@ def save_discovered_companies(existing_companies, new_listings, dry_run=False):
     
     for platform, count in new_listings_count.items():
         if count > 0:
-            save_companies(platform, existing_companies[platform])
-            print(f"  - {platform}: added {count} -> total {len(existing_companies[platform])} slugs")
+            raw_path = raw_candidates_file(platform)
+            raw = set(load_json_file(str(raw_path), []))
+            raw.update(new_listings[platform])
+            save_json_file(str(raw_path), sorted(raw))
+            if promote:
+                save_companies(platform, existing_companies[platform])
+                print(f"  - {platform}: added {count} -> promoted total {len(existing_companies[platform])} slugs")
+            else:
+                print(f"  - {platform}: added {count} raw candidates -> total raw {len(raw)}")
         else:
             print(f"  - {platform}: no new slugs found")
             
@@ -419,6 +439,11 @@ def main():
         action="store_true",
         help="Run discovery without writing company source files.",
     )
+    parser.add_argument(
+        "--promote",
+        action="store_true",
+        help="Immediately promote discoveries into legacy company files instead of raw candidates only.",
+    )
     args = parser.parse_args()
 
     print("=" * 80)
@@ -458,6 +483,7 @@ def main():
         existing_companies,
         merge_discovery_counts(*discoveries),
         dry_run=args.dry_run,
+        promote=args.promote,
     )
 
 if __name__ == "__main__":

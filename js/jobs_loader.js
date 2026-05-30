@@ -18,20 +18,46 @@ export async function fetchAndDecompress(url) {
     return JSON.parse(text);
 }
 
+async function loadConfig() {
+    try {
+        const response = await fetch('./data/config.json', { cache: 'no-store' });
+        if (!response.ok) return {};
+        return await response.json();
+    } catch {
+        return {};
+    }
+}
+
+function normalizeBasePath(basePath) {
+    return new URL(basePath, location.href).href.replace(/\/$/, '');
+}
+
 /**
  * Load jobs progressively: first chunk on main thread, rest via worker.
  * @param {Object} app - App instance with allJobs, filteredJobs, render(), refilter()
  * @param {string} basePath - Directory containing manifest and chunks
  */
 export async function loadJobsProgressive(app, basePath = './data/chunks') {
-    const base_url = new URL(basePath, location.href).href;
-    const manifest = await fetch(`${base_url}/jobs_manifest.json`).then(res => {
+    const config = await loadConfig();
+    const configuredBase = config.jobsBaseUrl || config.localJobsBaseUrl || basePath;
+    const base_url = normalizeBasePath(configuredBase);
+    const fallback_url = normalizeBasePath(basePath);
+
+    let activeBaseUrl = base_url;
+    let manifest = await fetch(`${activeBaseUrl}/jobs_manifest.json`).then(res => {
         if (!res.ok) throw new Error('Failed to load jobs manifest');
         return res.json();
+    }).catch(async err => {
+        if (activeBaseUrl === fallback_url) throw err;
+        console.warn('Failed to load configured jobs manifest, falling back to local chunks:', err);
+        activeBaseUrl = fallback_url;
+        const response = await fetch(`${activeBaseUrl}/jobs_manifest.json`);
+        if (!response.ok) throw new Error('Failed to load fallback jobs manifest');
+        return response.json();
     });
 
     // First chunk on main thread — renders immediately
-    const firstChunk = await fetchAndDecompress(`${base_url}/${manifest.chunks[0]}`);
+    const firstChunk = await fetchAndDecompress(`${activeBaseUrl}/${manifest.chunks[0]}`);
     app.allJobs = firstChunk;
     app.filteredJobs = firstChunk;
     updateStats(app.allJobs, manifest.last_updated);
@@ -63,7 +89,7 @@ export async function loadJobsProgressive(app, basePath = './data/chunks') {
     }
 
     manifest.chunks.slice(1).forEach(chunk => {
-        worker.postMessage(`${base_url}/${chunk}`);
+        worker.postMessage(`${activeBaseUrl}/${chunk}`);
     });
 }
 

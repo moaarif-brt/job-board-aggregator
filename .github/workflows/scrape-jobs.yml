@@ -1,156 +1,143 @@
 name: Update Job Listings
+
 on:
   schedule:
-    - cron: "33 7 * * *" # 3:33am EST
-  workflow_dispatch: # Manual trigger button
-jobs:
-  scrape:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360 # 6 hours max to prevent hanging
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    - cron: "33 7 * * *"
+  workflow_dispatch:
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+jobs:
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          shard_counts = {
+              "workday": 20,
+              "greenhouse": 12,
+              "icims": 12,
+              "bamboohr": 10,
+              "lever": 8,
+              "ashby": 8,
+              "workable": 8,
+              "recruitee": 6,
+              "personio": 6,
+              "smartrecruiters": 6,
+          }
+          include = [
+              {"platform": platform, "shard_index": shard, "shard_count": count}
+              for platform, count in shard_counts.items()
+              for shard in range(count)
+          ]
+          print("matrix=" + json.dumps({"include": include}))
+          PY
+
+  scrape:
+    needs: prepare-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12.10"
 
       - name: Install dependencies
-        run: pip install requests
+        run: pip install -r requirements.txt
 
-      - name: Discover new companies
-        run: python scripts/discover_companies.py
-
-      - name: Run job scraper
+      - name: Run scraper shard
         run: |
-          cd scripts
-          python scraper.py --source automated
+          OUT="scripts/output/${{ matrix.platform }}-${{ matrix.shard_index }}"
+          python scripts/scraper.py \
+            --source automated \
+            --platform "${{ matrix.platform }}" \
+            --shard-index "${{ matrix.shard_index }}" \
+            --shard-count "${{ matrix.shard_count }}" \
+            --priority daily,every_3_days \
+            --output-dir "$OUT"
+          cp "data/company_status/${{ matrix.platform }}.json" "$OUT/status_${{ matrix.platform }}.json"
 
-      - name: Merge with existing data
-        run: python scripts/merge_data.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scrape-output-${{ matrix.platform }}-${{ matrix.shard_index }}
+          path: scripts/output/${{ matrix.platform }}-${{ matrix.shard_index }}
+          retention-days: 2
+
+  merge-and-publish:
+    needs: scrape
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.10"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: scripts/artifacts
+
+      - name: Merge shard status
+        run: python scripts/merge_company_status.py --artifacts-dir scripts/artifacts
+
+      - name: Merge job artifacts
+        run: python scripts/merge_data.py --artifacts-dir scripts/artifacts --existing-data-dir data --output-dir data
+
+      - name: Publish chunks to Cloudflare R2
+        run: python scripts/publish_r2.py --chunks-dir data/chunks --prefix jobs --metadata data/metadata.json
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
 
       - name: Save trend snapshot
         run: |
           mkdir -p data/trends
-          DATE=$(date +'%Y-%m-%d')
+          python - <<'PY'
+          import gzip, json
+          from collections import Counter
+          from datetime import datetime, timezone
+          from pathlib import Path
 
-          # Per-platform breakdown from the scraper output
-          GREENHOUSE=$(jq '[.[] | select(.ats == "Greenhouse")] | length' scripts/output/all_jobs.json)
-          ASHBY=$(jq '[.[] | select(.ats == "Ashby")] | length' scripts/output/all_jobs.json)
-          BAMBOOHR=$(jq '[.[] | select(.ats == "BambooHR")] | length' scripts/output/all_jobs.json)
-          LEVER=$(jq '[.[] | select(.ats == "Lever")] | length' scripts/output/all_jobs.json)
-          WORKDAY=$(jq '[.[] | select(.ats == "Workday")] | length' scripts/output/all_jobs.json)
-          ICIMS=$(jq '[.[] | select(.ats == "iCIMS")] | length' scripts/output/all_jobs.json)
-          WORKABLE=$(jq '[.[] | select(.ats == "Workable")] | length' scripts/output/all_jobs.json)
-          RECRUITEE=$(jq '[.[] | select(.ats == "Recruitee")] | length' scripts/output/all_jobs.json)
-          PERSONIO=$(jq '[.[] | select(.ats == "Personio")] | length' scripts/output/all_jobs.json)
-          SMARTRECRUITERS=$(jq '[.[] | select(.ats == "SmartRecruiters")] | length' scripts/output/all_jobs.json)
+          chunks_dir = Path("data/chunks")
+          manifest = json.loads((chunks_dir / "jobs_manifest.json").read_text())
+          jobs = []
+          for name in manifest["chunks"]:
+              with gzip.open(chunks_dir / name, "rt", encoding="utf-8") as f:
+                  jobs.extend(json.load(f))
+          by_platform = Counter(job.get("ats", "Unknown").lower().replace(" ", "_") for job in jobs)
+          by_tier = Counter(job.get("skill_level", "unknown") for job in jobs)
+          metadata = json.loads(Path("data/metadata.json").read_text())
+          event = {
+              "date": datetime.now(timezone.utc).date().isoformat(),
+              "total_jobs": len(jobs),
+              "active_companies": metadata.get("active_companies", 0),
+              "recruiter_jobs": metadata.get("recruiter_jobs", 0),
+              "r2_manifest_url": metadata.get("r2_manifest_url"),
+              "by_platform": dict(by_platform),
+              "by_tier": dict(by_tier),
+          }
+          with Path("data/trends/daily.jsonl").open("a", encoding="utf-8") as f:
+              f.write(json.dumps(event) + "\n")
+          PY
 
-          # Tier breakdown
-          INTERN=$(jq '[.[] | select(.skill_level == "intern")] | length' scripts/output/all_jobs.json)
-          ENTRY=$(jq '[.[] | select(.skill_level == "entry")] | length' scripts/output/all_jobs.json)
-          MID=$(jq '[.[] | select(.skill_level == "mid")] | length' scripts/output/all_jobs.json)
-          SENIOR=$(jq '[.[] | select(.skill_level == "senior")] | length' scripts/output/all_jobs.json)
-
-          # Active companies count
-          COMPANIES=$(jq '. | length' scripts/output/active_companies.json)
-          RECRUITER=$(jq -r '.recruiter_jobs' scripts/output/metadata.json)
-
-          jq -n \
-            --arg date "$DATE" \
-            --argjson total_jobs "$(jq -r '.total_jobs' data/metadata.json)" \
-            --argjson active_companies "$COMPANIES" \
-            --argjson recruiter_jobs "$RECRUITER" \
-            --argjson greenhouse "$GREENHOUSE" \
-            --argjson ashby "$ASHBY" \
-            --argjson bamboohr "$BAMBOOHR" \
-            --argjson lever "$LEVER" \
-            --argjson workday "$WORKDAY" \
-            --argjson icims "$ICIMS" \
-            --argjson workable "$WORKABLE" \
-            --argjson recruitee "$RECRUITEE" \
-            --argjson personio "$PERSONIO" \
-            --argjson smartrecruiters "$SMARTRECRUITERS" \
-            --argjson intern "$INTERN" \
-            --argjson entry "$ENTRY" \
-            --argjson mid "$MID" \
-            --argjson senior "$SENIOR" \
-            '{
-              date: $date,
-              total_jobs: $total_jobs,
-              active_companies: $active_companies,
-              recruiter_jobs: $recruiter_jobs,
-              by_platform: {
-                greenhouse: $greenhouse,
-                ashby: $ashby,
-                bamboohr: $bamboohr,
-                lever: $lever,
-                workday: $workday,
-                icims: $icims,
-                workable: $workable,
-                recruitee: $recruitee,
-                personio: $personio,
-                smartrecruiters: $smartrecruiters
-              },
-              by_tier: {
-                intern: $intern,
-                entry: $entry,
-                mid: $mid,
-                senior: $senior
-              }
-            }' >> data/trends/daily.jsonl
-
-      - name: Commit and push merged data
+      - name: Commit small registry and metadata updates
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add data/chunks/jobs_chunk_*.json.gz data/chunks/jobs_manifest.json data/metadata.json data/trends/ data/salary/ data/workable_companies.json data/recruitee_companies.json data/personio_companies.json data/smartrecruiters_companies.json
-          git diff --staged --quiet || git commit -m "Automated scrape + merge - $(date +'%Y-%m-%d %H:%M UTC')"
+          git add data/config.json data/metadata.json data/trends/ data/company_status/ data/companies/ data/*_companies.json
+          git diff --staged --quiet || git commit -m "Automated sharded scrape + R2 publish - $(date +'%Y-%m-%d %H:%M UTC')"
           git push
-
-      - name: Get job count and timestamp
-        id: metadata
-        run: |
-          JOBS=$(jq -r '.total_jobs' data/metadata.json)
-          COMPANIES=$(jq '. | length' scripts/output/active_companies.json)
-          DATE=$(date +'%Y-%m-%d %H:%M UTC')
-          echo "jobs=$JOBS" >> $GITHUB_OUTPUT
-          echo "companies=$COMPANIES" >> $GITHUB_OUTPUT
-          echo "date=$DATE" >> $GITHUB_OUTPUT
-          echo "tag=$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
-
-      - name: Compress release files
-        run: gzip -k scripts/output/all_jobs.json
-
-      - name: Clean old releases (keep last 10)
-        run: |
-          RELEASES=$(gh release list --limit 100 --json tagName -q '.[10:] | .[].tagName')
-          if [ -n "$RELEASES" ]; then
-            echo "$RELEASES" | while read tag; do
-              echo "Deleting release: $tag"
-              gh release delete "$tag" --cleanup-tag -y
-            done
-          else
-            echo "No old releases to clean up"
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create release with job data
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: jobs-${{ steps.metadata.outputs.tag }}
-          name: Jobs Update - ${{ steps.metadata.outputs.date }}
-          body: |
-            ## Job Board Update (Automated)
-            **Total Jobs:** ${{ steps.metadata.outputs.jobs }}  
-            **Active Companies:** ${{ steps.metadata.outputs.companies }}  
-            **Last Updated:** ${{ steps.metadata.outputs.date }}
-            The chunked job data is available in the repo at `data/chunks/jobs_chunk_*.json.gz`
-          files: |
-            scripts/output/all_jobs.json.gz
-            scripts/output/active_companies.json
-            scripts/output/metadata.json
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

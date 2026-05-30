@@ -46,6 +46,7 @@ js/old_script.js
 
 # Scraper output 
 scripts/output/
+data/chunks/jobs_chunk_*.json.gz
 
 # Test Files
 scripts/test_icims.py
@@ -70,6 +71,11 @@ scripts/test_scraper.py
 !data/recruitee_companies.json
 !data/workable_companies.json
 !data/smartrecruiters_companies.json
+!data/config.json
+!data/companies/
+!data/companies/**
+!data/company_status/
+!data/company_status/**
 !data/salary/salary_lookup.json
 !data/salary/shards/salary_*.json
 

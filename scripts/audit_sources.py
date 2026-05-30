@@ -3,22 +3,12 @@ import gzip
 import json
 from collections import Counter
 from pathlib import Path
+from platforms import PLATFORMS, raw_candidates_file, status_file, validated_file
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
-COMPANY_FILES = {
-    "greenhouse": DATA_DIR / "greenhouse_companies.json",
-    "lever": DATA_DIR / "lever_companies.json",
-    "ashby": DATA_DIR / "ashby_companies.json",
-    "workday": DATA_DIR / "workday_companies.json",
-    "bamboohr": DATA_DIR / "bamboohr_companies.json",
-    "icims": DATA_DIR / "icims_companies.json",
-    "workable": DATA_DIR / "workable_companies.json",
-    "recruitee": DATA_DIR / "recruitee_companies.json",
-    "personio": DATA_DIR / "personio_companies.json",
-    "smartrecruiters": DATA_DIR / "smartrecruiters_companies.json",
-}
+COMPANY_FILES = {name: config["company_file"] for name, config in PLATFORMS.items()}
 
 
 def load_json(path, default):
@@ -74,17 +64,34 @@ def main():
     print(f"Manifest total jobs:   {manifest.get('totalJobs', 'unknown')}")
     print(f"Loaded chunk jobs:     {len(jobs):,}")
     print(f"Last updated:          {manifest.get('last_updated') or metadata.get('last_updated') or 'unknown'}")
+    if metadata.get("r2_manifest_url"):
+        print(f"R2 manifest:           {metadata['r2_manifest_url']}")
 
     company_rows = []
     total_company_slugs = 0
     for platform, path in COMPANY_FILES.items():
         slugs = load_json(path, [])
+        raw = load_json(raw_candidates_file(platform), [])
+        validated = load_json(validated_file(platform), [])
+        statuses = load_json(status_file(platform), {})
+        status_counts = Counter(record.get("status", "unknown") for record in statuses.values())
         count = len(slugs)
         total_company_slugs += count
-        company_rows.append((platform, count, path.relative_to(ROOT_DIR)))
+        company_rows.append(
+            (
+                platform,
+                count,
+                len(raw),
+                len(validated),
+                status_counts.get("active", 0),
+                status_counts.get("empty", 0),
+                status_counts.get("flaky", 0),
+                status_counts.get("dead", 0),
+            )
+        )
 
     print("\nCompany source lists")
-    print_table(company_rows, ("platform", "slugs", "file"))
+    print_table(company_rows, ("platform", "legacy", "raw", "validated", "active", "empty", "flaky", "dead"))
     print(f"\nTotal source slugs: {total_company_slugs:,}")
 
     if not jobs:

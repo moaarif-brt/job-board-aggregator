@@ -1,3 +1,4 @@
+import argparse
 import json
 import gzip
 import os
@@ -42,6 +43,27 @@ def load_chunks(directory):
     return jobs
 
 
+def load_jobs_file(path):
+    if not path.exists():
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_artifact_jobs(artifacts_dir):
+    """Load jobs.json files from all scraper shard artifacts."""
+    root = Path(artifacts_dir)
+    if not root.exists():
+        return []
+
+    jobs = []
+    for path in sorted(root.rglob("jobs.json")):
+        shard_jobs = load_jobs_file(path)
+        print(f"Loaded {len(shard_jobs):,} jobs from {path}")
+        jobs.extend(shard_jobs)
+    return jobs
+
+
 def save_chunks(jobs, directory, timestamp):
     """Write chunked gzip files + manifest."""
     chunks_dir = Path(directory) / "chunks"
@@ -73,12 +95,24 @@ def save_chunks(jobs, directory, timestamp):
         json.dump(manifest, f, indent=2)
 
 
-def merge_job_data():
+def load_metadata_candidates(paths):
+    for path in paths:
+        path = Path(path)
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+    return {}
+
+
+def merge_job_data(new_jobs_dir="scripts/output", existing_data_dir="data", output_dir="data", artifacts_dir=None):
     """Merge new scrape with existing data, removing stale jobs."""
-    new_jobs = load_chunks("scripts/output")
+    if artifacts_dir:
+        new_jobs = load_artifact_jobs(artifacts_dir)
+    else:
+        new_jobs = load_chunks(new_jobs_dir)
     print(f"New scrape: {len(new_jobs):,} jobs")
     
-    existing_jobs = load_chunks("data")
+    existing_jobs = load_chunks(existing_data_dir)
     print(f"Existing data: {len(existing_jobs):,} jobs")
     
     # Merge by URL
@@ -115,13 +149,18 @@ def merge_job_data():
     print(f"Merged result: {len(final_jobs):,} jobs")
     
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    save_chunks(final_jobs, "data", timestamp)
+    save_chunks(final_jobs, output_dir, timestamp)
     
     # Update metadata
-    with open("scripts/output/metadata.json") as f:
-        metadata = json.load(f)
+    metadata = load_metadata_candidates(
+        [
+            Path(new_jobs_dir) / "metadata.json",
+            Path(output_dir) / "metadata.json",
+        ]
+    )
     metadata["total_jobs"] = len(final_jobs)
-    with open("data/metadata.json", "w") as f:
+    metadata["last_updated"] = timestamp
+    with open(Path(output_dir) / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
     
     print("Merge complete")
@@ -129,4 +168,15 @@ def merge_job_data():
 
 
 if __name__ == "__main__":
-    merge_job_data()
+    parser = argparse.ArgumentParser(description="Merge scraper output into chunked job data.")
+    parser.add_argument("--new-jobs-dir", default="scripts/output")
+    parser.add_argument("--existing-data-dir", default="data")
+    parser.add_argument("--output-dir", default="data")
+    parser.add_argument("--artifacts-dir")
+    args = parser.parse_args()
+    merge_job_data(
+        new_jobs_dir=args.new_jobs_dir,
+        existing_data_dir=args.existing_data_dir,
+        output_dir=args.output_dir,
+        artifacts_dir=args.artifacts_dir,
+    )
