@@ -56,6 +56,11 @@ PLATFORMS = {
         "ats": "SmartRecruiters",
         "company_file": DATA_DIR / "smartrecruiters_companies.json",
     },
+    "jazzhr": {
+        "label": "JAZZHR",
+        "ats": "JazzHR",
+        "company_file": DATA_DIR / "jazzhr_companies.json",
+    },
 }
 
 DEFAULT_PRIORITIES = {"daily", "every_3_days"}

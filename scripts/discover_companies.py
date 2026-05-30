@@ -23,16 +23,25 @@ PLATFORM_FILES = {
     "recruitee": os.path.join(DATA_DIR, "recruitee_companies.json"),
     "personio": os.path.join(DATA_DIR, "personio_companies.json"),
     "smartrecruiters": os.path.join(DATA_DIR, "smartrecruiters_companies.json"),
+    "jazzhr": os.path.join(DATA_DIR, "jazzhr_companies.json"),
+    "workday": os.path.join(DATA_DIR, "workday_companies.json"),
 }
 
 COMMON_CRAWL_COLLINFO_URL = "https://index.commoncrawl.org/collinfo.json"
-DEFAULT_COMMON_CRAWL_PLATFORMS = ("workable", "recruitee", "personio", "smartrecruiters")
+DEFAULT_COMMON_CRAWL_PLATFORMS = tuple(PLATFORM_FILES)
 
 COMMON_CRAWL_QUERIES = {
     "workable": ["apply.workable.com/*"],
     "recruitee": ["*.recruitee.com/*"],
     "personio": ["*.jobs.personio.de/*", "*.jobs.personio.com/*"],
     "smartrecruiters": ["jobs.smartrecruiters.com/*"],
+    "greenhouse": ["boards.greenhouse.io/*"],
+    "lever": ["jobs.lever.co/*"],
+    "ashby": ["jobs.ashbyhq.com/*"],
+    "bamboohr": ["*.bamboohr.com/careers*"],
+    "icims": ["careers-*.icims.com/jobs/*", "*.icims.com/jobs/*"],
+    "jazzhr": ["app.jazz.co/widgets/basic/create/*", "app.jazz.co/feeds/export/jobs/*"],
+    "workday": ["*.myworkdayjobs.com/*"],
 }
 
 # Subdomains to ignore when extracting company names from domain prefixes
@@ -84,6 +93,13 @@ PATTERNS = {
     "smartrecruiters": [
         r'(?:jobs|www)\.smartrecruiters\.com/([^/\'"#?&\s]+)',
         r'api\.smartrecruiters\.com/v1/companies/([^/\'"#?&\s]+)/postings'
+    ],
+    "jazzhr": [
+        r'app\.jazz\.co/widgets/basic/create/([^/\'"#?&\s]+)',
+        r'app\.jazz\.co/feeds/export/jobs/([^/\'"#?&\s]+)'
+    ],
+    "workday": [
+        r'([a-z0-9-]+)\.wd(\d+)\.myworkdayjobs\.com/(?:en-US/)?([a-zA-Z0-9_-]+)'
     ]
 }
 
@@ -184,8 +200,19 @@ def extract_slugs_from_text(text):
         for regex in regex_list:
             matches = re.findall(regex, text, re.IGNORECASE)
             for match in matches:
-                slug = match.lower().strip()
-                if is_valid_slug(slug):
+                if platform == "workday" and isinstance(match, tuple) and len(match) == 3:
+                    company, wd_num, site_id = match
+                    slug = f"{company.lower()}|wd{wd_num}|{site_id}"
+                elif isinstance(match, tuple):
+                    slug = match[0].lower().strip()
+                else:
+                    slug = match.lower().strip()
+                valid = (
+                    bool(re.fullmatch(r"[a-z0-9-]+\|wd\d+\|[A-Za-z0-9_-]+", slug))
+                    if platform == "workday"
+                    else is_valid_slug(slug)
+                )
+                if valid:
                     if platform not in found:
                         found[platform] = set()
                     found[platform].add(slug)

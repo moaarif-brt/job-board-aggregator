@@ -30,12 +30,13 @@ WORKABLE_FILE = os.path.join(ROOT_DIR, "data", "workable_companies.json")
 RECRUITEE_FILE = os.path.join(ROOT_DIR, "data", "recruitee_companies.json")
 PERSONIO_FILE = os.path.join(ROOT_DIR, "data", "personio_companies.json")
 SMARTRECRUITERS_FILE = os.path.join(ROOT_DIR, "data", "smartrecruiters_companies.json")
+JAZZHR_FILE = os.path.join(ROOT_DIR, "data", "jazzhr_companies.json")
 
 LOCATIONS_FILE = os.path.join(ROOT_DIR, "data", "locations.json")
 
 PLATFORM_SOURCE_SUMMARY = (
     "greenhouse_api, ashby_posting_api, bamboohr_api, lever_api, workday_api, "
-    "icims_sitemap, workable_api, recruitee_api, personio_xml, smartrecruiters_api"
+    "icims_sitemap, workable_api, recruitee_api, personio_xml, smartrecruiters_api, jazzhr_xml"
 )
 
 
@@ -1076,6 +1077,63 @@ def fetch_company_jobs_smartrecruiters(slug):
     return slug, [], None
 
 
+def fetch_company_jobs_jazzhr(slug):
+    """
+    https://app.jazz.co/feeds/export/jobs/{slug}
+    Returns an XML feed of public JazzHR jobs.
+    """
+    url = f"https://app.jazz.co/feeds/export/jobs/{slug}"
+    headers = {
+        "Accept": "application/xml, text/xml, text/html",
+        "User-Agent": random.choice(USER_AGENTS),
+    }
+
+    time.sleep(random.uniform(0.5, 2.0))
+
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        if response.status_code == 200:
+            try:
+                root = ET.fromstring(response.content)
+            except ET.ParseError:
+                return slug, [], response.status_code
+
+            company_name = root.findtext("company") or slug
+            normalized = []
+            for job in root.findall(".//job"):
+                title = job.findtext("title")
+                job_url = job.findtext("url")
+                if not title or not job_url:
+                    continue
+
+                city = job.findtext("city") or ""
+                state = job.findtext("state") or ""
+                country = job.findtext("country") or ""
+                location = ", ".join(filter(None, [city, state, country])) or "Not specified"
+                remote, coords = enrich_location(location)
+
+                normalized.append(
+                    {
+                        "company": company_name,
+                        "company_slug": slug,
+                        "title": title,
+                        "location": location[:50],
+                        "remote": remote,
+                        "coords": coords,
+                        "url": job_url,
+                        "is_recruiter": is_recruiter_company(company_name),
+                        "ats": "JazzHR",
+                        "skill_level": job_tier_classification(title),
+                        **get_job_metadata(),
+                    }
+                )
+            return slug, normalized, response.status_code
+        return slug, [], response.status_code
+    except Exception as e:
+        print(f"Error fetching JazzHR for {slug}: {e}")
+    return slug, [], None
+
+
 def fetch_all_jobs(companies, fetcher, platform="ATS"):
     """Fetch jobs from all companies in parallel."""
     print("=" * 80)
@@ -1107,6 +1165,7 @@ def fetch_all_jobs(companies, fetcher, platform="ATS"):
         "recruitee": 30,
         "personio": 30,
         "smartrecruiters": 30,
+        "jazzhr": 30,
     }
 
     max_workers = MAX_WORKERS.get(platform_lower, 30)
@@ -1492,6 +1551,7 @@ FETCHERS = {
     "recruitee": fetch_company_jobs_recruitee,
     "personio": fetch_company_jobs_personio,
     "smartrecruiters": fetch_company_jobs_smartrecruiters,
+    "jazzhr": fetch_company_jobs_jazzhr,
 }
 
 
@@ -1554,6 +1614,7 @@ def main(args=None):
     recruitee_companies = load_companies(RECRUITEE_FILE)
     personio_companies = load_companies(PERSONIO_FILE)
     smartrecruiters_companies = load_companies(SMARTRECRUITERS_FILE)
+    jazzhr_companies = load_companies(JAZZHR_FILE)
 
     if (
         not greenhouse_companies
@@ -1566,6 +1627,7 @@ def main(args=None):
         and not recruitee_companies
         and not personio_companies
         and not smartrecruiters_companies
+        and not jazzhr_companies
     ):
         print("Exiting - no companies loaded!")
         return
@@ -1582,6 +1644,7 @@ def main(args=None):
         (recruitee_companies, fetch_company_jobs_recruitee, "RECRUITEE"),
         (personio_companies, fetch_company_jobs_personio, "PERSONIO"),
         (smartrecruiters_companies, fetch_company_jobs_smartrecruiters, "SMARTRECRUITERS"),
+        (jazzhr_companies, fetch_company_jobs_jazzhr, "JAZZHR"),
     ]
 
     # Run all platforms concurrently
@@ -1615,6 +1678,7 @@ def main(args=None):
         | recruitee_companies
         | personio_companies
         | smartrecruiters_companies
+        | jazzhr_companies
     )
 
     save_results(all_companies, all_active_companies, all_jobs)

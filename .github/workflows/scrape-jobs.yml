@@ -26,6 +26,7 @@ jobs:
               "recruitee": 6,
               "personio": 6,
               "smartrecruiters": 6,
+              "jazzhr": 6,
           }
           include = [
               {"platform": platform, "shard_index": shard, "shard_count": count}

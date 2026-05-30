@@ -43,11 +43,11 @@ def validate_slug(platform, slug):
     return slug, jobs, status_code, status, priority
 
 
-def validate_platform(platform, limit=None, workers=10, dry_run=False):
+def validate_platform(platform, limit=None, workers=10, dry_run=False, new_only=False):
     raw = set(load_json(raw_candidates_file(platform), []))
     validated = set(load_json(validated_file(platform), []))
     statuses = load_json(status_file(platform), {})
-    candidates = sorted(raw | validated)
+    candidates = sorted(raw - set(statuses)) if new_only else sorted(raw | validated)
     if limit:
         candidates = candidates[:limit]
 
@@ -109,11 +109,18 @@ def main():
     parser.add_argument("--platform", choices=sorted(PLATFORMS), action="append")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--workers", type=int, default=10)
+    parser.add_argument("--new-only", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     for platform in args.platform or sorted(PLATFORMS):
-        validate_platform(platform, limit=args.limit, workers=args.workers, dry_run=args.dry_run)
+        validate_platform(
+            platform,
+            limit=args.limit,
+            workers=args.workers,
+            dry_run=args.dry_run,
+            new_only=args.new_only,
+        )
 
 
 if __name__ == "__main__":

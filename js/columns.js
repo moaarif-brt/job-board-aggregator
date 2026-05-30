@@ -39,6 +39,7 @@ export function createColumns() {
                     'recruitee': 'ats-recruitee',
                     'personio': 'ats-personio',
                     'smartrecruiters': 'ats-smartrecruiters',
+                    'jazzhr': 'ats-jazzhr',
                 };
                 const cls = classes[ats.toLowerCase()] || 'ats-unknown';
                 return `<span class="badge ${cls}">${escape(ats)}</span>`;
