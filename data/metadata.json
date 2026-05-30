@@ -1,13 +1,13 @@
 {
-  "last_updated": "2026-05-30T02:25:18.710004Z",
+  "last_updated": "2026-05-30T09:44:21.479483Z",
   "total_companies": 54679,
   "active_companies": 26134,
-  "total_jobs": 1672785,
+  "total_jobs": 1701349,
   "recruiter_jobs": 18698,
   "source_type": "automated",
   "platforms": "greenhouse_api, ashby_posting_api, bamboohr_api, lever_api, workday_api, icims_sitemap, workable_api, recruitee_api, personio_xml, smartrecruiters_api",
   "r2_manifest_url": "https://pub-77d7e643372f465ea1ee9c2c591c10ad.r2.dev/jobs/latest/jobs_manifest.json",
-  "r2_snapshot_manifest_url": "https://pub-77d7e643372f465ea1ee9c2c591c10ad.r2.dev/jobs/snapshots/2026-05-30-0226/jobs_manifest.json",
+  "r2_snapshot_manifest_url": "https://pub-77d7e643372f465ea1ee9c2c591c10ad.r2.dev/jobs/snapshots/2026-05-30-0945/jobs_manifest.json",
   "r2_jobs_base_url": "https://pub-77d7e643372f465ea1ee9c2c591c10ad.r2.dev/jobs/latest",
   "storage": "cloudflare_r2"
 }
