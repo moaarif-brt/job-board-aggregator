@@ -1487,7 +1487,11 @@ def save_results(all_companies, active_companies, all_jobs):
         "scraped_at",
         "remote",
         "coords",
-        "salary"
+        "salary",
+        "verification_status",
+        "job_health_score",
+        "last_verified_at",
+        "verification_reason",
     }
 
     slim_jobs = [

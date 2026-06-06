@@ -90,11 +90,19 @@ jobs:
         with:
           path: scripts/artifacts
 
+      - name: Restore job validation cache
+        uses: actions/cache@v4
+        with:
+          path: data/job_validation_cache.json
+          key: job-validation-${{ github.run_id }}
+          restore-keys: |
+            job-validation-
+
       - name: Merge shard status
         run: python scripts/merge_company_status.py --artifacts-dir scripts/artifacts
 
       - name: Merge job artifacts
-        run: python scripts/merge_data.py --artifacts-dir scripts/artifacts --existing-data-dir data --output-dir data
+        run: python scripts/merge_data.py --artifacts-dir scripts/artifacts --existing-data-dir data --output-dir data --validation-workers 48 --min-health-score 70
 
       - name: Publish chunks to Cloudflare R2
         run: python scripts/publish_r2.py --chunks-dir data/chunks --prefix jobs --metadata data/metadata.json

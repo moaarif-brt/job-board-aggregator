@@ -6,8 +6,15 @@ import re
 from pathlib import Path
 from datetime import datetime, timezone
 
-CHUNK_SIZE = 25_000
+from job_validator import (
+    MIN_PUBLISH_HEALTH_SCORE,
+    ACTIVE,
+    is_stale,
+    should_publish,
+    validate_jobs,
+)
 
+CHUNK_SIZE = 25_000
 
 def get_dedup_key(job):
     url = job.get("url", "")
@@ -64,7 +71,7 @@ def load_artifact_jobs(artifacts_dir):
     return jobs
 
 
-def save_chunks(jobs, directory, timestamp):
+def save_chunks(jobs, directory, timestamp, verification=None):
     """Write chunked gzip files + manifest."""
     chunks_dir = Path(directory) / "chunks"
     chunks_dir.mkdir(parents=True, exist_ok=True)
@@ -91,6 +98,8 @@ def save_chunks(jobs, directory, timestamp):
         "totalJobs": len(jobs),
         "last_updated": timestamp,
     }
+    if verification:
+        manifest["verification"] = verification
     with open(chunks_dir / "jobs_manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
 
@@ -104,7 +113,15 @@ def load_metadata_candidates(paths):
     return {}
 
 
-def merge_job_data(new_jobs_dir="scripts/output", existing_data_dir="data", output_dir="data", artifacts_dir=None):
+def merge_job_data(
+    new_jobs_dir="scripts/output",
+    existing_data_dir="data",
+    output_dir="data",
+    artifacts_dir=None,
+    validation_workers=32,
+    min_health_score=MIN_PUBLISH_HEALTH_SCORE,
+    allow_unverified=False,
+):
     """Merge new scrape with existing data, removing stale jobs."""
     if artifacts_dir:
         new_jobs = load_artifact_jobs(artifacts_dir)
@@ -115,29 +132,37 @@ def merge_job_data(new_jobs_dir="scripts/output", existing_data_dir="data", outp
     existing_jobs = load_chunks(existing_data_dir)
     print(f"Existing data: {len(existing_jobs):,} jobs")
     
-    # Merge by URL
+    # Merge by URL. Existing jobs are only carried forward when they are still
+    # fresh for their ATS or have a recent active verification record. This is
+    # intentionally much stricter than the old global 30-day stale window.
     merged = {}
     stale_count = 0
+    dead_existing_count = 0
+    low_health_existing_count = 0
     for job in existing_jobs:
         key = get_dedup_key(job)
         if not key:
             continue
-        scraped = job.get("scraped_at")
-        if scraped:
-            try:
-                scraped_date = datetime.fromisoformat(scraped.replace("Z", "+00:00"))
-                age_days = (datetime.now(timezone.utc) - scraped_date).days
-                if age_days <= 30:
-                    merged[key] = job
-                else:
-                    stale_count += 1
-            except Exception:
-                merged[key] = job
-        else:
+        if job.get("verification_status") == "dead":
+            dead_existing_count += 1
+            continue
+        if job.get("verification_status") == ACTIVE and should_publish(job):
             merged[key] = job
+            continue
+        if is_stale(job):
+            stale_count += 1
+            continue
+        if job.get("job_health_score") is not None and not should_publish(job):
+            low_health_existing_count += 1
+            continue
+        merged[key] = job
     
     if stale_count > 0:
-        print(f"Dropped {stale_count:,} stale jobs (>30 days old)")
+        print(f"Dropped {stale_count:,} stale existing jobs using ATS-specific windows")
+    if dead_existing_count > 0:
+        print(f"Dropped {dead_existing_count:,} previously verified dead jobs")
+    if low_health_existing_count > 0:
+        print(f"Dropped {low_health_existing_count:,} low-health existing jobs")
     
     # New scrape always wins on duplicates
     for job in new_jobs:
@@ -146,10 +171,32 @@ def merge_job_data(new_jobs_dir="scripts/output", existing_data_dir="data", outp
             merged[key] = job
     
     final_jobs = list(merged.values())
-    print(f"Merged result: {len(final_jobs):,} jobs")
+    print(f"Merged pre-validation result: {len(final_jobs):,} jobs")
     
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    save_chunks(final_jobs, output_dir, timestamp)
+    cache_path = Path(output_dir) / "job_validation_cache.json"
+    final_jobs, validation_stats = validate_jobs(
+        final_jobs,
+        cache_path=cache_path,
+        workers=validation_workers,
+        min_health_score=min_health_score,
+        require_active=not allow_unverified,
+    )
+    verification_metadata = {
+        "enabled": True,
+        "min_health_score": min_health_score,
+        "require_active": not allow_unverified,
+        "stats": validation_stats,
+    }
+    print(
+        "Validation result: "
+        f"published={validation_stats['published']:,}, "
+        f"dead={validation_stats['dropped_dead']:,}, "
+        f"suspicious={validation_stats['dropped_suspicious']:,}, "
+        f"unverified={validation_stats['dropped_unverified']:,}, "
+        f"low_health={validation_stats['dropped_low_health']:,}"
+    )
+    save_chunks(final_jobs, output_dir, timestamp, verification=verification_metadata)
     
     # Update metadata
     metadata = load_metadata_candidates(
@@ -160,12 +207,12 @@ def merge_job_data(new_jobs_dir="scripts/output", existing_data_dir="data", outp
     )
     metadata["total_jobs"] = len(final_jobs)
     metadata["last_updated"] = timestamp
+    metadata["verification"] = verification_metadata
     with open(Path(output_dir) / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
     
     print("Merge complete")
     return len(final_jobs)
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Merge scraper output into chunked job data.")
@@ -173,10 +220,20 @@ if __name__ == "__main__":
     parser.add_argument("--existing-data-dir", default="data")
     parser.add_argument("--output-dir", default="data")
     parser.add_argument("--artifacts-dir")
+    parser.add_argument("--validation-workers", type=int, default=32)
+    parser.add_argument("--min-health-score", type=int, default=MIN_PUBLISH_HEALTH_SCORE)
+    parser.add_argument(
+        "--allow-unverified",
+        action="store_true",
+        help="Publish unverified jobs above the health threshold. Use only for emergency fallback.",
+    )
     args = parser.parse_args()
     merge_job_data(
         new_jobs_dir=args.new_jobs_dir,
         existing_data_dir=args.existing_data_dir,
         output_dir=args.output_dir,
         artifacts_dir=args.artifacts_dir,
+        validation_workers=args.validation_workers,
+        min_health_score=args.min_health_score,
+        allow_unverified=args.allow_unverified,
     )

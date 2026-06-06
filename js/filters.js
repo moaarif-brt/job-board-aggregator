@@ -3,6 +3,7 @@
 // ============================================================
 
 import { loadApplicationStatus } from './storage.js';
+import { isHighConfidenceJob } from './job_health.js';
 
 function normalizeText(value) {
     return String(value || '')
@@ -81,6 +82,8 @@ export function filterJobs(allJobs) {
     };
 
     const filteredJobs = allJobs.filter(job => {
+        if (!isHighConfidenceJob(job)) return false;
+
         // Recruiter filter
         if (f.hideRecruiters && job.is_recruiter === true) return false;
 

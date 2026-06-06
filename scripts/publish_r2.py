@@ -41,6 +41,23 @@ def save_json(path, data):
         f.write("\n")
 
 
+def assert_verified_metadata(metadata_path):
+    metadata = load_json(metadata_path) if metadata_path.exists() else {}
+    verification = metadata.get("verification") or {}
+    if os.environ.get("ALLOW_UNVERIFIED_PUBLISH") == "1":
+        print("WARNING: ALLOW_UNVERIFIED_PUBLISH=1 set; skipping verification metadata guard")
+        return metadata
+    if not verification.get("enabled"):
+        raise RuntimeError(
+            "Refusing to publish chunks without verification metadata. "
+            "Run scripts/merge_data.py with URL validation enabled first."
+        )
+    stats = verification.get("stats") or {}
+    if not stats.get("published"):
+        raise RuntimeError("Refusing to publish: verification produced zero publishable jobs.")
+    return metadata
+
+
 def publish(chunks_dir, prefix, metadata_path):
     account_id = env("R2_ACCOUNT_ID")
     bucket = env("R2_BUCKET")
@@ -55,6 +72,7 @@ def publish(chunks_dir, prefix, metadata_path):
         config=Config(signature_version="s3v4"),
     )
 
+    metadata = assert_verified_metadata(metadata_path)
     manifest_path = chunks_dir / "jobs_manifest.json"
     manifest = load_json(manifest_path)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M")
@@ -71,7 +89,6 @@ def publish(chunks_dir, prefix, metadata_path):
     latest_manifest_url = f"{public_base_url}/{latest_prefix}/jobs_manifest.json"
     snapshot_manifest_url = f"{public_base_url}/{snapshot_prefix}/jobs_manifest.json"
 
-    metadata = load_json(metadata_path) if metadata_path.exists() else {}
     metadata.update(
         {
             "r2_manifest_url": latest_manifest_url,

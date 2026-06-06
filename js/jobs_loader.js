@@ -3,6 +3,7 @@
 // ============================================================
 
 import { enableMap } from "./map_view.js";
+import { configureJobHealthGate, isHighConfidenceJob } from "./job_health.js";
 
 /**
  * Fetch and decompress a single gzipped JSON file.
@@ -55,9 +56,11 @@ export async function loadJobsProgressive(app, basePath = './data/chunks') {
         if (!response.ok) throw new Error('Failed to load fallback jobs manifest');
         return response.json();
     });
+    configureJobHealthGate(manifest.verification);
 
     // First chunk on main thread — renders immediately
-    const firstChunk = await fetchAndDecompress(`${activeBaseUrl}/${manifest.chunks[0]}`);
+    const firstChunk = (await fetchAndDecompress(`${activeBaseUrl}/${manifest.chunks[0]}`))
+        .filter(isHighConfidenceJob);
     app.allJobs = firstChunk;
     app.filteredJobs = firstChunk;
     updateStats(app.allJobs, manifest.last_updated);
@@ -73,7 +76,7 @@ export async function loadJobsProgressive(app, basePath = './data/chunks') {
     let pending = manifest.chunks.length - 1;
 
     worker.onmessage = ({ data: jobs }) => {
-        app.allJobs.push(...jobs);
+        app.allJobs.push(...jobs.filter(isHighConfidenceJob));
         app.refilter();
         app.render();
         updateStats(app.allJobs, manifest.last_updated);
