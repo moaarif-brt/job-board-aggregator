@@ -16,16 +16,16 @@ jobs:
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           shard_counts = {
-              "workday": 20,
+              # "workday": 20,
               "greenhouse": 12,
-              "icims": 12,
+              # "icims": 12,
               "bamboohr": 10,
               "lever": 8,
               "ashby": 8,
               "workable": 8,
               "recruitee": 6,
               "personio": 6,
-              "smartrecruiters": 6,
+              # "smartrecruiters": 6,
               "jazzhr": 6,
               "pinpoint": 6,
           }
@@ -103,7 +103,7 @@ jobs:
         run: python scripts/merge_company_status.py --artifacts-dir scripts/artifacts
 
       - name: Merge job artifacts
-        run: python scripts/merge_data.py --artifacts-dir scripts/artifacts --existing-data-dir data --output-dir data --validation-workers 48 --min-health-score 90
+        run: python scripts/merge_data.py --artifacts-dir scripts/artifacts --existing-data-dir data --output-dir data --validation-workers 24 --min-health-score 90
 
       - name: Save job validation cache
         uses: actions/cache/save@v4
