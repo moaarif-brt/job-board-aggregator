@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-06-07T14:52:19.571812Z",
+  "last_updated": "2026-06-07T16:49:52.471764Z",
   "total_companies": 54679,
   "active_companies": 26134,
   "total_jobs": 8,
@@ -7,7 +7,7 @@
   "source_type": "automated",
   "platforms": "greenhouse_api, ashby_posting_api, bamboohr_api, lever_api, workday_api, icims_sitemap, workable_api, recruitee_api, personio_xml, smartrecruiters_api",
   "r2_manifest_url": "https://pub-77d7e643372f465ea1ee9c2c591c10ad.r2.dev/jobs/latest/jobs_manifest.json",
-  "r2_snapshot_manifest_url": "https://pub-77d7e643372f465ea1ee9c2c591c10ad.r2.dev/jobs/snapshots/2026-06-07-1639/jobs_manifest.json",
+  "r2_snapshot_manifest_url": "https://pub-77d7e643372f465ea1ee9c2c591c10ad.r2.dev/jobs/snapshots/2026-06-07-1839/jobs_manifest.json",
   "r2_jobs_base_url": "https://pub-77d7e643372f465ea1ee9c2c591c10ad.r2.dev/jobs/latest",
   "storage": "cloudflare_r2",
   "verification": {
@@ -16,12 +16,12 @@
     "min_health_score": 90,
     "require_active": true,
     "stats": {
-      "input": 42483,
-      "cache_hits": 0,
-      "fast_path_active": 0,
-      "checked": 42483,
+      "input": 85663,
+      "cache_hits": 42477,
+      "fast_path_active": 8,
+      "checked": 43186,
       "published": 8,
-      "dropped_dead": 42475,
+      "dropped_dead": 85655,
       "dropped_suspicious": 0,
       "dropped_unverified": 0,
       "dropped_low_health": 0
