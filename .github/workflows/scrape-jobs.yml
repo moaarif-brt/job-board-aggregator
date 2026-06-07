@@ -16,12 +16,12 @@ jobs:
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           shard_counts = {
-              "workday": 20,
+              # "workday": 20,
               # "greenhouse": 12,
               # "icims": 12,
               # "bamboohr": 10,
               # "lever": 8,
-              # "ashby": 8,
+              "ashby": 8,
               # "workable": 8,
               # "recruitee": 6,
               # "personio": 6,
@@ -75,7 +75,7 @@ jobs:
   merge-and-publish:
     needs: scrape
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
 
