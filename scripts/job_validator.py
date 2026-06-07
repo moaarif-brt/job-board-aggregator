@@ -5,8 +5,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 
@@ -20,6 +21,26 @@ MIN_PUBLISH_HEALTH_SCORE = 90
 REQUEST_TIMEOUT = 12
 CACHE_SAVE_EVERY = 500
 MAX_PENDING_FUTURES_MULTIPLIER = 20
+TRACKING_QUERY_PREFIXES = ("utm_",)
+TRACKING_QUERY_KEYS = {
+    "gh_src",
+    "lever-source",
+    "source",
+    "ref",
+    "referrer",
+    "src",
+    "campaign",
+}
+VERIFICATION_FIELDS = {
+    "verification_status",
+    "job_health_score",
+    "last_verified_at",
+    "verification_reason",
+    "verified_final_url",
+    "verification_http_status",
+    "job_fingerprint",
+    "validation_cache_key",
+}
 
 ATS_STALE_DAYS = {
     "Workday": 3,
@@ -235,6 +256,37 @@ def normalized_ats(job):
     return job.get("ats") or "Unknown"
 
 
+def normalize_text_value(value):
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def normalize_url(url):
+    if not url:
+        return ""
+    parsed = urlparse(str(url).strip())
+    scheme = parsed.scheme.lower() or "https"
+    netloc = parsed.netloc.lower().removeprefix("www.")
+    path = re.sub(r"/+", "/", parsed.path or "/").rstrip("/")
+    query_items = []
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        key_lower = key.lower()
+        if key_lower in TRACKING_QUERY_KEYS or any(key_lower.startswith(prefix) for prefix in TRACKING_QUERY_PREFIXES):
+            continue
+        query_items.append((key, value))
+    query = urlencode(sorted(query_items))
+    return urlunparse((scheme, netloc, path, "", query, ""))
+
+
+def job_fingerprint(job):
+    parts = [
+        normalized_ats(job),
+        normalize_url(job.get("url") or job.get("absolute_url")),
+        normalize_text_value(job.get("company_slug") or job.get("company")),
+        normalize_text_value(job.get("title")),
+    ]
+    return sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
 def stale_limit_days(job):
     return ATS_STALE_DAYS.get(normalized_ats(job), 5)
 
@@ -291,10 +343,21 @@ def save_validation_cache(path, cache):
 
 
 def cache_key(job):
-    url = job.get("url") or job.get("absolute_url") or ""
-    ats = normalized_ats(job)
-    company = job.get("company_slug") or job.get("company") or ""
-    return f"{ats}|{company}|{url}"
+    return job_fingerprint(job)
+
+
+def stamp_identity(job):
+    fingerprint = job_fingerprint(job)
+    job["job_fingerprint"] = fingerprint
+    job["validation_cache_key"] = fingerprint
+    return fingerprint
+
+
+def copy_verification_fields(source, target):
+    for field in VERIFICATION_FIELDS:
+        if source.get(field) is not None:
+            target[field] = source[field]
+    return target
 
 
 def cache_is_fresh(job, cached):
@@ -307,6 +370,15 @@ def cache_is_fresh(job, cached):
         return False
     ttl = timedelta(days=active_cache_ttl_days(job))
     return utc_now() - checked_at <= ttl
+
+
+def cached_identity_matches(job, cached):
+    expected = job_fingerprint(job)
+    return cached.get("job_fingerprint") in (None, expected) and cached.get("checked_url") in (
+        None,
+        normalize_url(job.get("url") or job.get("absolute_url")),
+        job.get("url") or job.get("absolute_url"),
+    )
 
 
 def page_has_expired_text(ats, text):
@@ -577,6 +649,7 @@ def validate_job_url(job, cached=None):
 
 
 def apply_cached_result(job, cached):
+    stamp_identity(job)
     job["verification_status"] = cached.get("verification_status", UNVERIFIED)
     job["job_health_score"] = int(cached.get("job_health_score", 0))
     job["last_verified_at"] = cached.get("last_verified_at")
@@ -585,6 +658,7 @@ def apply_cached_result(job, cached):
 
 
 def apply_validation_result(job, result):
+    stamp_identity(job)
     job["verification_status"] = result.status
     job["job_health_score"] = result.score
     job["last_verified_at"] = iso_now()
@@ -596,16 +670,17 @@ def apply_validation_result(job, result):
     return job
 
 
-def cache_record(result):
+def cache_record(result, fingerprint=None):
     return {
         "verification_status": result.status,
         "job_health_score": result.score,
         "last_verified_at": iso_now(),
         "verification_reason": result.reason,
-        "checked_url": result.checked_url,
+        "checked_url": normalize_url(result.checked_url),
         "final_url": result.final_url,
         "http_status": result.http_status,
         "failure_count": result.failure_count,
+        "job_fingerprint": fingerprint,
     }
 
 
@@ -635,6 +710,7 @@ def validate_jobs(
     stats = {
         "input": len(jobs),
         "cache_hits": 0,
+        "fast_path_active": 0,
         "checked": 0,
         "published": 0,
         "dropped_dead": 0,
@@ -644,11 +720,12 @@ def validate_jobs(
     }
 
     for job in jobs:
-        key = cache_key(job)
+        key = stamp_identity(job)
         cached = cache.get(key)
-        if cached and cache_is_fresh(job, cached):
+        if cached and cached_identity_matches(job, cached) and cache_is_fresh(job, cached):
             apply_cached_result(job, cached)
             stats["cache_hits"] += 1
+            stats["fast_path_active"] += 1 if job.get("verification_status") == ACTIVE else 0
             validated.append(job)
         else:
             pending.append((key, job, cached))
@@ -683,7 +760,7 @@ def validate_jobs(
                         failure_count,
                     )
                 apply_validation_result(job, result)
-                cache[key] = cache_record(result)
+                cache[key] = cache_record(result, fingerprint=key)
                 validated.append(job)
                 stats["checked"] += 1
                 completed_since_save += 1

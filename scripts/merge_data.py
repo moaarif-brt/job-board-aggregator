@@ -9,8 +9,11 @@ from datetime import datetime, timezone
 from job_validator import (
     MIN_PUBLISH_HEALTH_SCORE,
     ACTIVE,
+    copy_verification_fields,
+    job_fingerprint,
     is_stale,
     should_publish,
+    stamp_identity,
     validate_jobs,
 )
 
@@ -113,6 +116,48 @@ def load_metadata_candidates(paths):
     return {}
 
 
+def prepare_existing_jobs(existing_jobs):
+    by_dedup_key = {}
+    by_fingerprint = {}
+    stats = {"stale": 0, "dead": 0, "low_health": 0, "usable": 0}
+
+    for job in existing_jobs:
+        key = get_dedup_key(job)
+        if not key:
+            continue
+        stamp_identity(job)
+        if job.get("verification_status") == "dead":
+            stats["dead"] += 1
+            continue
+        if job.get("verification_status") == ACTIVE and should_publish(job):
+            by_dedup_key[key] = job
+            by_fingerprint[job_fingerprint(job)] = job
+            stats["usable"] += 1
+            continue
+        if is_stale(job):
+            stats["stale"] += 1
+            continue
+        if job.get("job_health_score") is not None and not should_publish(job):
+            stats["low_health"] += 1
+            continue
+        by_dedup_key[key] = job
+        by_fingerprint[job_fingerprint(job)] = job
+        stats["usable"] += 1
+
+    return by_dedup_key, by_fingerprint, stats
+
+
+def merge_new_job_with_existing(new_job, existing_by_key, existing_by_fingerprint):
+    stamp_identity(new_job)
+    key = get_dedup_key(new_job)
+    existing = existing_by_key.get(key) if key else None
+    if existing is None:
+        existing = existing_by_fingerprint.get(job_fingerprint(new_job))
+    if existing and existing.get("verification_status") == ACTIVE and should_publish(existing):
+        copy_verification_fields(existing, new_job)
+    return key, new_job
+
+
 def merge_job_data(
     new_jobs_dir="scripts/output",
     existing_data_dir="data",
@@ -135,43 +180,29 @@ def merge_job_data(
     existing_jobs = load_chunks(existing_data_dir)
     print(f"Existing data: {len(existing_jobs):,} jobs")
     
-    # Merge by URL. Existing jobs are only carried forward when they are still
-    # fresh for their ATS or have a recent active verification record. This is
-    # intentionally much stricter than the old global 30-day stale window.
-    merged = {}
-    stale_count = 0
-    dead_existing_count = 0
-    low_health_existing_count = 0
-    for job in existing_jobs:
-        key = get_dedup_key(job)
-        if not key:
-            continue
-        if job.get("verification_status") == "dead":
-            dead_existing_count += 1
-            continue
-        if job.get("verification_status") == ACTIVE and should_publish(job):
-            merged[key] = job
-            continue
-        if is_stale(job):
-            stale_count += 1
-            continue
-        if job.get("job_health_score") is not None and not should_publish(job):
-            low_health_existing_count += 1
-            continue
-        merged[key] = job
+    # Existing verified rows act as a strict identity/verification carry-forward
+    # source. New scrape rows still win content, but unchanged active jobs keep
+    # their recent verification fields and skip network validation.
+    merged, existing_by_fingerprint, existing_stats = prepare_existing_jobs(existing_jobs)
     
-    if stale_count > 0:
-        print(f"Dropped {stale_count:,} stale existing jobs using ATS-specific windows")
-    if dead_existing_count > 0:
-        print(f"Dropped {dead_existing_count:,} previously verified dead jobs")
-    if low_health_existing_count > 0:
-        print(f"Dropped {low_health_existing_count:,} low-health existing jobs")
+    if existing_stats["stale"] > 0:
+        print(f"Dropped {existing_stats['stale']:,} stale existing jobs using ATS-specific windows")
+    if existing_stats["dead"] > 0:
+        print(f"Dropped {existing_stats['dead']:,} previously verified dead jobs")
+    if existing_stats["low_health"] > 0:
+        print(f"Dropped {existing_stats['low_health']:,} low-health existing jobs")
     
-    # New scrape always wins on duplicates
+    carried_forward_verifications = 0
+    # New scrape always wins content on duplicates, but can inherit still-fresh
+    # verification when identity/fingerprint is unchanged.
     for job in new_jobs:
-        key = get_dedup_key(job)
+        key, job = merge_new_job_with_existing(job, merged, existing_by_fingerprint)
         if key:
+            if job.get("verification_status") == ACTIVE and should_publish(job):
+                carried_forward_verifications += 1
             merged[key] = job
+    if carried_forward_verifications:
+        print(f"Carried forward {carried_forward_verifications:,} fresh active verifications onto unchanged scrape rows")
     
     final_jobs = list(merged.values())
     print(f"Merged pre-validation result: {len(final_jobs):,} jobs")

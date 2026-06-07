@@ -91,7 +91,8 @@ jobs:
           path: scripts/artifacts
 
       - name: Restore job validation cache
-        uses: actions/cache@v4
+        id: validation-cache
+        uses: actions/cache/restore@v4
         with:
           path: data/job_validation_cache.json
           key: job-validation-${{ github.run_id }}
@@ -103,6 +104,13 @@ jobs:
 
       - name: Merge job artifacts
         run: python scripts/merge_data.py --artifacts-dir scripts/artifacts --existing-data-dir data --output-dir data --validation-workers 48 --min-health-score 90
+
+      - name: Save job validation cache
+        uses: actions/cache/save@v4
+        if: success()
+        with:
+          path: data/job_validation_cache.json
+          key: job-validation-${{ github.run_id }}
 
       - name: Publish chunks to Cloudflare R2
         run: python scripts/publish_r2.py --chunks-dir data/chunks --prefix jobs --metadata data/metadata.json
