@@ -16,9 +16,10 @@ DEAD = "dead"
 SUSPICIOUS = "suspicious"
 UNVERIFIED = "unverified"
 
-MIN_PUBLISH_HEALTH_SCORE = 70
+MIN_PUBLISH_HEALTH_SCORE = 90
 REQUEST_TIMEOUT = 12
 CACHE_SAVE_EVERY = 500
+MAX_PENDING_FUTURES_MULTIPLIER = 20
 
 ATS_STALE_DAYS = {
     "Workday": 3,
@@ -36,18 +37,18 @@ ATS_STALE_DAYS = {
 }
 
 ACTIVE_CACHE_TTL_DAYS = {
-    "Workday": 1,
-    "iCIMS": 1,
-    "Lever": 2,
-    "Ashby": 2,
-    "Greenhouse": 2,
-    "BambooHR": 2,
-    "SmartRecruiters": 2,
-    "Workable": 2,
-    "Recruitee": 2,
-    "JazzHR": 2,
-    "Pinpoint": 2,
-    "Personio": 2,
+    "Workday": 0.5,
+    "iCIMS": 0.5,
+    "Lever": 1,
+    "Ashby": 1,
+    "Greenhouse": 1,
+    "BambooHR": 1,
+    "SmartRecruiters": 1,
+    "Workable": 1,
+    "Recruitee": 1,
+    "JazzHR": 1,
+    "Pinpoint": 1,
+    "Personio": 1,
 }
 
 EXPIRED_PATTERNS = [
@@ -65,6 +66,40 @@ EXPIRED_PATTERNS = [
     r"we\s+could\s+not\s+find\s+that\s+job",
     r"no\s+longer\s+accepting\s+applications",
     r"not\s+accepting\s+applications",
+    r"applications\s+are\s+closed",
+    r"this\s+role\s+is\s+closed",
+    r"this\s+role\s+has\s+been\s+filled",
+    r"this\s+vacancy\s+has\s+closed",
+    r"this\s+vacancy\s+is\s+closed",
+    r"this\s+opening\s+is\s+closed",
+    r"the\s+page\s+you\s+requested\s+could\s+not\s+be\s+found",
+    r"the\s+requested\s+job\s+could\s+not\s+be\s+found",
+    r"opportunity\s+is\s+no\s+longer\s+available",
+    r"job\s+you\s+are\s+looking\s+for\s+is\s+no\s+longer",
+]
+
+BOT_CHALLENGE_PATTERNS = [
+    r"captcha",
+    r"cf-chl",
+    r"cloudflare",
+    r"access\s+denied",
+    r"request\s+blocked",
+    r"verify\s+you\s+are\s+human",
+    r"are\s+you\s+a\s+human",
+    r"unusual\s+traffic",
+    r"temporarily\s+blocked",
+    r"akamai",
+    r"perimeterx",
+    r"datadome",
+    r"bot\s+detection",
+]
+
+SOFT_INVALID_PATTERNS = [
+    r"<title>\s*(?:not\s+found|404|error)",
+    r"page\s+not\s+found",
+    r"oops[,!\s]+(?:something\s+went\s+wrong|we\s+couldn.t\s+find)",
+    r"search\s+all\s+jobs",
+    r"browse\s+open\s+positions",
 ]
 
 ATS_EXPIRED_PATTERNS = {
@@ -268,6 +303,8 @@ def cache_is_fresh(job, cached):
         return False
     if cached.get("verification_status") == DEAD:
         return True
+    if cached.get("verification_status") != ACTIVE:
+        return False
     ttl = timedelta(days=active_cache_ttl_days(job))
     return utc_now() - checked_at <= ttl
 
@@ -278,6 +315,20 @@ def page_has_expired_text(ats, text):
     sample = text[:250_000].lower()
     patterns = EXPIRED_PATTERNS + ATS_EXPIRED_PATTERNS.get(ats, [])
     return any(re.search(pattern, sample, re.IGNORECASE) for pattern in patterns)
+
+
+def page_has_bot_challenge(text):
+    if not text:
+        return False
+    sample = text[:120_000].lower()
+    return any(re.search(pattern, sample, re.IGNORECASE) for pattern in BOT_CHALLENGE_PATTERNS)
+
+
+def page_has_soft_invalid_text(text):
+    if not text:
+        return False
+    sample = text[:120_000].lower()
+    return any(re.search(pattern, sample, re.IGNORECASE) for pattern in SOFT_INVALID_PATTERNS)
 
 
 def looks_like_homepage_redirect(original_url, final_url, ats):
@@ -299,6 +350,51 @@ def looks_like_homepage_redirect(original_url, final_url, ats):
         return True
     generic_paths = {"careers", "jobs", "job", "openings", "search", "home"}
     return path.lower() in generic_paths and original_path.lower() != path.lower()
+
+
+def final_url_keeps_job_identity(original_url, final_url):
+    original = urlparse(original_url)
+    final = urlparse(final_url or "")
+    if not final.netloc:
+        return False
+    original_parts = [part for part in original.path.lower().split("/") if part]
+    final_path = final.path.lower()
+    meaningful_parts = [
+        part for part in original_parts
+        if len(part) >= 6 and part not in {"jobs", "job", "careers", "apply", "postings"}
+    ]
+    if not meaningful_parts:
+        return True
+    return any(part in final_path for part in meaningful_parts[-2:])
+
+
+def is_success_status(status_code):
+    return 200 <= int(status_code or 0) < 300
+
+
+def is_blocked_status(status_code):
+    return int(status_code or 0) in {401, 403, 407, 408, 423, 425, 429, 451, 500, 502, 503, 504}
+
+
+def precheck_response(job, response, text):
+    ats = normalized_ats(job)
+    if response is None:
+        return DEAD, "request_failed"
+    if is_blocked_status(response.status_code):
+        return DEAD, f"{ats.lower()}_blocked_or_rate_limited_{response.status_code}"
+    if not is_success_status(response.status_code):
+        return DEAD, f"{ats.lower()}_non_success_{response.status_code}"
+    if len(response.history) >= 4:
+        return DEAD, f"{ats.lower()}_suspicious_redirect_chain"
+    if page_has_bot_challenge(text):
+        return DEAD, f"{ats.lower()}_bot_challenge"
+    if page_has_soft_invalid_text(text):
+        return DEAD, f"{ats.lower()}_soft_invalid_page"
+    if looks_like_homepage_redirect(job["url"], response.url, ats):
+        return DEAD, f"{ats.lower()}_homepage_redirect"
+    if not final_url_keeps_job_identity(job["url"], response.url):
+        return DEAD, f"{ats.lower()}_lost_job_identity_redirect"
+    return None
 
 
 def has_minimum_metadata(job):
@@ -331,65 +427,47 @@ def base_health_score(job, status, reason, failure_count=0):
 
 
 def validate_greenhouse(job, response, text):
-    if response.status_code in (404, 410):
-        return DEAD, "greenhouse_404"
     if page_has_expired_text("Greenhouse", text):
         return DEAD, "greenhouse_expired_text"
-    if "/jobs/" not in (response.url or "") and looks_like_homepage_redirect(job["url"], response.url, "Greenhouse"):
-        return SUSPICIOUS, "greenhouse_homepage_redirect"
+    if "/jobs/" not in (response.url or ""):
+        return DEAD, "greenhouse_missing_job_path"
     return ACTIVE, "greenhouse_active"
 
 
 def validate_workday(job, response, text):
-    if response.status_code in (404, 410):
-        return DEAD, "workday_404"
-    if len(response.history) >= 5:
-        return SUSPICIOUS, "workday_redirect_chain"
     if page_has_expired_text("Workday", text):
         return DEAD, "workday_expired_text"
-    if looks_like_homepage_redirect(job["url"], response.url, "Workday"):
-        return SUSPICIOUS, "workday_homepage_redirect"
+    if "myworkdayjobs.com" not in urlparse(response.url).netloc:
+        return DEAD, "workday_external_redirect"
     return ACTIVE, "workday_active"
 
 
 def validate_lever(job, response, text):
-    if response.status_code in (404, 410):
-        return DEAD, "lever_404"
     if page_has_expired_text("Lever", text):
         return DEAD, "lever_archived_or_expired"
-    if looks_like_homepage_redirect(job["url"], response.url, "Lever"):
-        return SUSPICIOUS, "lever_homepage_redirect"
+    if "lever.co" not in urlparse(response.url).netloc:
+        return DEAD, "lever_external_redirect"
     return ACTIVE, "lever_active"
 
 
 def validate_ashby(job, response, text):
-    if response.status_code in (404, 410):
-        return DEAD, "ashby_404"
     if page_has_expired_text("Ashby", text):
         return DEAD, "ashby_removed_posting"
-    if looks_like_homepage_redirect(job["url"], response.url, "Ashby"):
-        return SUSPICIOUS, "ashby_homepage_redirect"
+    if "ashbyhq.com" not in urlparse(response.url).netloc:
+        return DEAD, "ashby_external_redirect"
     return ACTIVE, "ashby_active"
 
 
 def validate_icims(job, response, text):
-    if response.status_code in (404, 410):
-        return DEAD, "icims_404"
     if page_has_expired_text("iCIMS", text):
         return DEAD, "icims_invalid_or_expired"
-    if looks_like_homepage_redirect(job["url"], response.url, "iCIMS"):
-        return SUSPICIOUS, "icims_homepage_redirect"
     return ACTIVE, "icims_active"
 
 
 def validate_generic_ats(job, response, text):
     ats = normalized_ats(job)
-    if response.status_code in (404, 410):
-        return DEAD, f"{ats.lower()}_404"
     if page_has_expired_text(ats, text):
         return DEAD, f"{ats.lower()}_expired_text"
-    if looks_like_homepage_redirect(job["url"], response.url, ats):
-        return SUSPICIOUS, f"{ats.lower()}_homepage_redirect"
     return ACTIVE, f"{ats.lower()}_active"
 
 
@@ -452,7 +530,7 @@ def validate_job_url(job, cached=None):
 
     response = request_job_url(url)
     if response is None:
-        status = UNVERIFIED
+        status = DEAD
         reason = "request_failed"
         failure_count += 1
         return ValidationResult(
@@ -467,11 +545,24 @@ def validate_job_url(job, cached=None):
 
     content_type = response.headers.get("Content-Type", "")
     text = response.text if "text" in content_type or "html" in content_type or "xml" in content_type else ""
+    precheck = precheck_response(job, response, text)
+    if precheck:
+        status, reason = precheck
+        return ValidationResult(
+            status,
+            base_health_score(job, status, reason, failure_count + 1),
+            reason,
+            url,
+            response.url,
+            response.status_code,
+            failure_count + 1,
+        )
+
     validator = ATS_VALIDATORS.get(ats, validate_generic_ats)
     status, reason = validator(job, response, text)
     if status == ACTIVE:
         failure_count = 0
-    elif status in (DEAD, SUSPICIOUS):
+    else:
         failure_count += 1
 
     return ValidationResult(
@@ -521,7 +612,14 @@ def cache_record(result):
 def should_publish(job, min_health_score=MIN_PUBLISH_HEALTH_SCORE):
     if job.get("verification_status") != ACTIVE:
         return False
+    if not cache_is_fresh(job, {"last_verified_at": job.get("last_verified_at"), "verification_status": ACTIVE}):
+        return False
     return int(job.get("job_health_score") or 0) >= min_health_score
+
+
+def iter_batches(items, size):
+    for start in range(0, len(items), size):
+        yield items[start:start + size]
 
 
 def validate_jobs(
@@ -561,36 +659,40 @@ def validate_jobs(
     )
 
     completed_since_save = 0
+    completed_total = 0
+    max_pending_futures = max(workers * MAX_PENDING_FUTURES_MULTIPLIER, workers)
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(validate_job_url, job, cached): (key, job)
-            for key, job, cached in pending
-        }
-        for i, future in enumerate(as_completed(futures), 1):
-            key, job = futures[future]
-            try:
-                result = future.result()
-            except Exception as exc:
-                failure_count = int((cache.get(key) or {}).get("failure_count", 0)) + 1
-                result = ValidationResult(
-                    UNVERIFIED,
-                    base_health_score(job, UNVERIFIED, "validator_exception", failure_count),
-                    f"validator_exception:{type(exc).__name__}",
-                    job.get("url") or "",
-                    "",
-                    None,
-                    failure_count,
-                )
-            apply_validation_result(job, result)
-            cache[key] = cache_record(result)
-            validated.append(job)
-            stats["checked"] += 1
-            completed_since_save += 1
-            if completed_since_save >= CACHE_SAVE_EVERY:
-                save_validation_cache(cache_path, cache)
-                completed_since_save = 0
-                print(f"Validation progress: {i:,}/{len(pending):,} checked")
-            time.sleep(0.002)
+        for batch in iter_batches(pending, max_pending_futures):
+            futures = {
+                executor.submit(validate_job_url, job, cached): (key, job)
+                for key, job, cached in batch
+            }
+            for future in as_completed(futures):
+                key, job = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    failure_count = int((cache.get(key) or {}).get("failure_count", 0)) + 1
+                    result = ValidationResult(
+                        DEAD,
+                        0,
+                        f"validator_exception:{type(exc).__name__}",
+                        job.get("url") or "",
+                        "",
+                        None,
+                        failure_count,
+                    )
+                apply_validation_result(job, result)
+                cache[key] = cache_record(result)
+                validated.append(job)
+                stats["checked"] += 1
+                completed_since_save += 1
+                completed_total += 1
+                if completed_since_save >= CACHE_SAVE_EVERY:
+                    save_validation_cache(cache_path, cache)
+                    completed_since_save = 0
+                    print(f"Validation progress: {completed_total:,}/{len(pending):,} checked")
+                time.sleep(0.002)
 
     save_validation_cache(cache_path, cache)
 

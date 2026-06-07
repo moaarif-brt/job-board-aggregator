@@ -1,4 +1,5 @@
 import argparse
+import gzip
 import json
 import mimetypes
 import os
@@ -7,6 +8,8 @@ from pathlib import Path
 
 import boto3
 from botocore.config import Config
+
+from job_validator import MIN_PUBLISH_HEALTH_SCORE, should_publish
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -44,18 +47,49 @@ def save_json(path, data):
 def assert_verified_metadata(metadata_path):
     metadata = load_json(metadata_path) if metadata_path.exists() else {}
     verification = metadata.get("verification") or {}
-    if os.environ.get("ALLOW_UNVERIFIED_PUBLISH") == "1":
-        print("WARNING: ALLOW_UNVERIFIED_PUBLISH=1 set; skipping verification metadata guard")
-        return metadata
     if not verification.get("enabled"):
         raise RuntimeError(
             "Refusing to publish chunks without verification metadata. "
             "Run scripts/merge_data.py with URL validation enabled first."
         )
+    if not verification.get("strict_mode"):
+        raise RuntimeError("Refusing to publish: strict verification mode metadata is missing.")
+    if verification.get("require_active") is not True:
+        raise RuntimeError("Refusing to publish: manifest does not require active-only jobs.")
+    if int(verification.get("min_health_score") or 0) < MIN_PUBLISH_HEALTH_SCORE:
+        raise RuntimeError("Refusing to publish: health threshold is below strict minimum.")
     stats = verification.get("stats") or {}
     if not stats.get("published"):
         raise RuntimeError("Refusing to publish: verification produced zero publishable jobs.")
+    if stats.get("dropped_unverified", 0) > 0 or stats.get("dropped_suspicious", 0) > 0:
+        raise RuntimeError("Refusing to publish: validation left unverified or suspicious failures.")
+    if stats.get("input", 0) != stats.get("cache_hits", 0) + stats.get("checked", 0):
+        raise RuntimeError("Refusing to publish: validation did not account for every input job.")
     return metadata
+
+
+def assert_chunks_strictly_verified(chunks_dir, manifest, min_health_score):
+    total = 0
+    for filename in manifest.get("chunks", []):
+        chunk_path = chunks_dir / filename
+        if not chunk_path.exists():
+            raise FileNotFoundError(chunk_path)
+        with gzip.open(chunk_path, "rt", encoding="utf-8") as f:
+            jobs = json.load(f)
+        for index, job in enumerate(jobs):
+            total += 1
+            if job.get("verification_status") != "active":
+                raise RuntimeError(f"Refusing to publish: {filename}[{index}] is not verified active.")
+            if int(job.get("job_health_score") or 0) < min_health_score:
+                raise RuntimeError(f"Refusing to publish: {filename}[{index}] is below health threshold.")
+            if not job.get("last_verified_at"):
+                raise RuntimeError(f"Refusing to publish: {filename}[{index}] has no last_verified_at.")
+            if not should_publish(job, min_health_score=min_health_score):
+                raise RuntimeError(f"Refusing to publish: {filename}[{index}] failed strict publish check.")
+    if total != manifest.get("totalJobs"):
+        raise RuntimeError(
+            f"Refusing to publish: manifest totalJobs={manifest.get('totalJobs')} but chunks contain {total}."
+        )
 
 
 def publish(chunks_dir, prefix, metadata_path):
@@ -75,6 +109,11 @@ def publish(chunks_dir, prefix, metadata_path):
     metadata = assert_verified_metadata(metadata_path)
     manifest_path = chunks_dir / "jobs_manifest.json"
     manifest = load_json(manifest_path)
+    verification = manifest.get("verification") or {}
+    if not verification.get("enabled") or not verification.get("strict_mode"):
+        raise RuntimeError("Refusing to publish: manifest is not strict verified-only output.")
+    min_health_score = int(verification.get("min_health_score") or MIN_PUBLISH_HEALTH_SCORE)
+    assert_chunks_strictly_verified(chunks_dir, manifest, min_health_score)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M")
     latest_prefix = f"{prefix}/latest"
     snapshot_prefix = f"{prefix}/snapshots/{timestamp}"

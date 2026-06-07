@@ -123,6 +123,9 @@ def merge_job_data(
     allow_unverified=False,
 ):
     """Merge new scrape with existing data, removing stale jobs."""
+    if allow_unverified:
+        raise ValueError("--allow-unverified is disabled in strict verified-jobs-only mode")
+
     if artifacts_dir:
         new_jobs = load_artifact_jobs(artifacts_dir)
     else:
@@ -184,8 +187,9 @@ def merge_job_data(
     )
     verification_metadata = {
         "enabled": True,
+        "strict_mode": True,
         "min_health_score": min_health_score,
-        "require_active": not allow_unverified,
+        "require_active": True,
         "stats": validation_stats,
     }
     print(
@@ -225,7 +229,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--allow-unverified",
         action="store_true",
-        help="Publish unverified jobs above the health threshold. Use only for emergency fallback.",
+        help="Disabled in strict mode. Kept only to fail loudly for old automation.",
     )
     args = parser.parse_args()
     merge_job_data(

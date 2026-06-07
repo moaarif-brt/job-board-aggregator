@@ -102,7 +102,7 @@ jobs:
         run: python scripts/merge_company_status.py --artifacts-dir scripts/artifacts
 
       - name: Merge job artifacts
-        run: python scripts/merge_data.py --artifacts-dir scripts/artifacts --existing-data-dir data --output-dir data --validation-workers 48 --min-health-score 70
+        run: python scripts/merge_data.py --artifacts-dir scripts/artifacts --existing-data-dir data --output-dir data --validation-workers 48 --min-health-score 90
 
       - name: Publish chunks to Cloudflare R2
         run: python scripts/publish_r2.py --chunks-dir data/chunks --prefix jobs --metadata data/metadata.json
