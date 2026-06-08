@@ -16,7 +16,7 @@ jobs:
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           shard_counts = {
-              # "workday": 20,
+              "workday": 20,
               # "greenhouse": 12,
               # "icims": 12,
               # "bamboohr": 10,
