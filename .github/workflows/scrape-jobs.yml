@@ -103,7 +103,7 @@ jobs:
         run: python scripts/merge_company_status.py --artifacts-dir scripts/artifacts
 
       - name: Merge job artifacts
-        run: python scripts/merge_data.py --artifacts-dir scripts/artifacts --existing-data-dir data --output-dir data --validation-workers 24 --min-health-score 60
+        run: python scripts/merge_data.py --artifacts-dir scripts/artifacts --existing-data-dir data --output-dir data --validation-workers 24 --min-health-score 50
 
       - name: Save job validation cache
         uses: actions/cache/save@v4
