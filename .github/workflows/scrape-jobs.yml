@@ -24,8 +24,8 @@ jobs:
               "ashby": 8,
               "workable": 8,
               "recruitee": 6,
-              # "personio": 6,
-              # "smartrecruiters": 6,
+              "personio": 6,
+              "smartrecruiters": 6,
               # "jazzhr": 6,
               # "pinpoint": 6,
           }
