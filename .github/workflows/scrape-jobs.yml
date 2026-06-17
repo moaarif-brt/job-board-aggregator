@@ -17,12 +17,12 @@ jobs:
           import json
           shard_counts = {
               # "workday": 20,
-              # "greenhouse": 12,
+              "greenhouse": 12,
               # "icims": 12,
               "bamboohr": 10,
-              "lever": 8,
+              # "lever": 8,
               "ashby": 8,
-              "workable": 8,
+              # "workable": 8,
               "recruitee": 6,
               "personio": 6,
               "smartrecruiters": 6,
